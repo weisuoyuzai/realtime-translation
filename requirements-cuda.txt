@@ -1,0 +1,5 @@
+# Optional: NVIDIA GPU acceleration for local Whisper / NLLB (Windows and Linux).
+# CTranslate2 4.x needs CUDA 12 + cuDNN 9. If you already have a system-wide CUDA 12 + cuDNN 9 install
+# you can skip this file; otherwise these wheels bring the DLLs (the app adds them to the DLL search path).
+nvidia-cublas-cu12
+nvidia-cudnn-cu12
