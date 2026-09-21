@@ -205,3 +205,25 @@ def test_mt_runaway_guards():
     assert trim(long_src, "我们该走了。我们该走了。") == "我们该走了。"
     assert trim("A pendulum", "一个摆锤。") == "一个摆锤。"
     assert trim("你好吗", "How are you? I am fine.") == "How are you?"       # short CJK source
+
+
+def test_mic_without_portaudio_library(monkeypatch):
+    """Linux without libportaudio2: `import sounddevice` raises OSError, which must not crash the UI or the pipeline."""
+    import builtins
+
+    import pytest
+
+    from live_translator.audio import mic
+    from live_translator.audio.base import AudioSourceError
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "sounddevice":
+            raise OSError("PortAudio library not found")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    assert mic.list_input_devices() == []
+    with pytest.raises(AudioSourceError, match="PortAudio"):
+        mic.MicSource().start(lambda *_: None)

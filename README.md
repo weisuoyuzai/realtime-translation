@@ -85,6 +85,49 @@ python -m live_translator --cli --file talk.mp3 --speed 4 --translator nllb   # 
 
 预设：**速度优先**（停顿 0.3 s、greedy、草稿译文）／**均衡**／**准确优先**（停顿 0.7 s、beam 5、更长上下文）。
 
+## 安装包与打包
+
+不想装 Python？直接下载打包好的程序（[Releases](../../releases)，由 GitHub Actions 构建）：
+
+| 系统 | 文件 | 运行 |
+|---|---|---|
+| Windows 10 2004+ / 11（x64） | `LiveTranslator-<版本>-windows-x64.zip` | 解压后双击 `LiveTranslator.exe`；`live-translator-cli.exe` 是同一程序的控制台版（`--cli`、`--list-apps`） |
+| Windows + NVIDIA 显卡 | `…-windows-x64-cuda.zip` | 同上，已内置 cuBLAS / cuDNN，GPU 开箱即用（体积约大 1 GB） |
+| macOS 13+（Apple 芯片） | `LiveTranslator-<版本>-macos-arm64.dmg` | 拖进「应用程序」。应用未经 Apple 公证，首次打开请右键 →「打开」，或执行 `xattr -dr com.apple.quarantine /Applications/LiveTranslator.app`。屏幕录制权限授予 **Live Translator** 本身；音频捕获组件已预编译，无需 Xcode |
+| Linux（x64） | `LiveTranslator-<版本>-linux-x64.tar.gz` | `tar xzf` 后运行 `LiveTranslator/LiveTranslator`。仅支持麦克风 / 文件 / 远程识别（暂无系统与按应用捕获）。需要系统库：`sudo apt install libportaudio2 libxcb-cursor0 libxkbcommon-x11-0 libegl1`（PortAudio 用于麦克风，其余是 Qt 界面所需） |
+
+> 安装包不含 Whisper / NLLB 模型，首次使用时按需下载到模型目录（可在「偏好设置 → 存储」修改）。
+> 没有代码签名：Windows 可能出现 SmartScreen 提示，选「更多信息 → 仍要运行」。
+
+### 本地打包
+
+PyInstaller 不能交叉编译，要给哪个系统打包就在哪个系统上运行（需要 Python 3.10+，macOS 还需要 `xcode-select --install`）：
+
+```bash
+python scripts/build.py                  # 新建 .venv-build → 装依赖 → 打包 → 冒烟测试 → 生成压缩包，产物在 dist/
+python scripts/build.py --current-env    # 直接用当前 Python 环境（依赖已装好时更快）
+python scripts/build.py --cuda           # 仅 Windows：连同 NVIDIA cuBLAS / cuDNN 一起打包
+python scripts/build.py --help           # 其它选项：--no-test  --no-archive  --version
+```
+
+产物：Windows `dist/LiveTranslator/` + `.zip`；macOS `dist/LiveTranslator.app` + `.dmg`；Linux `dist/LiveTranslator/` + `.tar.gz`。
+构建结束前会运行 `--self-test`（导入全部原生依赖、加载并运行一次 Silero VAD、创建 Qt 窗口类），打包遗漏文件会在这里直接报错。
+打包配置在 [packaging/live_translator.spec](packaging/live_translator.spec)，入口是 [packaging/entry.py](packaging/entry.py)。
+无控制台的 GUI 版把日志写到配置目录下的 `live-translator.log`。
+
+### GitHub Actions
+
+[.github/workflows/build.yml](.github/workflows/build.yml)：
+
+- 每次 push / PR：运行测试（Ubuntu），并在 Windows / macOS / Linux 上各打一份包，作为 Actions 构建产物保留 14 天。
+- **发布**：推送版本标签即自动构建并创建 Release，附上全部安装包（含 Windows CUDA 版）：
+
+  ```bash
+  git tag v0.1.0 && git push origin v0.1.0
+  ```
+
+- 手动运行（Actions → Build → Run workflow）可勾选「Also build the Windows CUDA variant」。
+
 ## 平台说明
 
 **Windows 10 2004+ / 11**：全部功能。按应用捕获用 `proc-tap`（WASAPI process loopback，包含目标进程树），
@@ -114,6 +157,9 @@ live_translator/
   ui/                主窗口 · 设置面板 · 字幕历史 · 悬浮字幕
   native/macos/      lt_sck_capture.swift
 tests/               单元 + 管线 + GUI 测试（含本地假 OpenAI 服务器）
+packaging/           PyInstaller 入口与 spec
+scripts/build.py     本地打包脚本（CI 也用它）
+.github/workflows/   测试 + 三平台打包 + 发布
 ```
 
 ```bash

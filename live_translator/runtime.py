@@ -82,7 +82,10 @@ def _add_cuda_dll_dirs() -> None:
     if _cuda_paths_done or sys.platform != "win32":
         return
     _cuda_paths_done = True
-    for sp in {p for p in sys.path if p.endswith("site-packages")}:
+    roots = {p for p in sys.path if p.endswith("site-packages")}
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):      # packaged build: wheels are unpacked next to the exe
+        roots.add(sys._MEIPASS)
+    for sp in roots:
         for d in glob.glob(os.path.join(sp, "nvidia", "*", "bin")):
             try:
                 os.add_dll_directory(d)

@@ -7,7 +7,7 @@ def list_input_devices() -> list[str]:
     """Names of capture-capable devices (loopback/monitor pseudo-devices excluded), default first."""
     try:
         import sounddevice as sd
-    except ImportError:
+    except (ImportError, OSError):                  # OSError: PortAudio shared library missing (Linux: libportaudio2)
         return []
     names: list[str] = []
     try:
@@ -39,6 +39,8 @@ class MicSource(AudioSource):
             import sounddevice as sd
         except ImportError as e:
             raise AudioSourceError("缺少依赖 sounddevice，请执行: pip install sounddevice") from e
+        except OSError as e:
+            raise AudioSourceError("找不到 PortAudio 库，无法使用麦克风。Linux 请执行: sudo apt install libportaudio2") from e
         try:
             info = sd.query_devices(self.device, "input")
             rate = int(info["default_samplerate"])

@@ -11,6 +11,7 @@ import json
 import logging
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from collections import deque
@@ -33,8 +34,21 @@ def helper_path() -> Path:
     return d / "lt-sck-audio"
 
 
+def bundled_helper() -> Path | None:
+    """The helper precompiled at packaging time (scripts/build.py), present only in packaged builds."""
+    root = getattr(sys, "_MEIPASS", None)
+    if not root:
+        return None
+    path = Path(root) / "native" / "macos" / "lt-sck-audio"
+    return path if path.is_file() else None
+
+
 def ensure_helper() -> Path:
-    """Compile the Swift helper if it is missing or the source changed. Returns the binary path."""
+    """Path of the helper binary: the precompiled one shipped in a packaged build, otherwise compile the
+    Swift source if the binary is missing or the source changed."""
+    bundled = bundled_helper()
+    if bundled:
+        return bundled
     out = helper_path()
     stamp = out.with_suffix(".sha")
     digest = hashlib.sha256(_SRC.read_bytes()).hexdigest()

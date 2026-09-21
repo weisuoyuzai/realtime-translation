@@ -1,0 +1,2 @@
+# Only needed to build the standalone app (scripts/build.py installs it into its build venv).
+pyinstaller>=6.10
