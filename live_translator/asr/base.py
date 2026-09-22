@@ -20,6 +20,7 @@ class AsrResult:
     language: str = ""            # internal code ("en", "zh", ...); "" when the backend did not say
     language_prob: float = 0.0
     elapsed_ms: float = 0.0
+    confidence: float = 1.0       # 0..1, how sure the decoder was; 1.0 when the backend does not report it
 
 
 class Recognizer(ABC):

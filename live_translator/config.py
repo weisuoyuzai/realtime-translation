@@ -82,6 +82,9 @@ class TranslateCfg:
     topic: str = ""               # free-text hint: "Kubernetes conference talk"
     context_size: int = 4         # previous sentences fed back as few-shot context
     draft: bool = False           # translate partials while the speaker is still talking
+    correct_source: bool = False  # ask the LLM to silently fix likely ASR mis-hearings in the displayed original
+                                   # text too (not just the translation); one extra request per sentence, so off
+                                   # by default. Only takes effect with an LLM translator (llm_remote / llm_local).
 
 
 @dataclass
@@ -95,9 +98,22 @@ class SegmenterCfg:
 
 
 @dataclass
+class SpeakerCfg:
+    enabled: bool = False         # tell speakers apart by voice (downloads a 28 MB model on first use)
+    similarity: float = 0.55      # cosine similarity that counts as "same person": higher = splits more, lower = merges
+    max_speakers: int = 0         # 0 = no limit
+
+
+@dataclass
 class OverlayCfg:
     enabled: bool = False
     show_source: bool = True
+    max_sentences: int = 2        # sentences on screen at once (1 = only the current one); earlier sentences stay
+                                  # above it, dimmer, and the oldest drop out first
+    auto_height: bool = True      # bar height follows the content; False = keep the height you dragged it to (h)
+    learning: bool = False        # learning mode (also affects the main window): ruby over Chinese / Japanese + speaker
+    ruby_scope: str = "both"      # what gets ruby in learning mode: dst (translation) | src (original) | both
+    tts_read: str = "dst"         # what the speaker button reads aloud: dst (translation) | src (original)
     font_size: int = 26
     opacity: float = 0.72
     click_through: bool = False
@@ -107,6 +123,11 @@ class OverlayCfg:
     h: int = 150
 
 
+def ruby_wanted(o: OverlayCfg, translation: bool) -> bool:
+    """Whether learning mode annotates this text: the translation (``translation=True``) or the original."""
+    return o.learning and o.ruby_scope in ("both", "dst" if translation else "src")
+
+
 @dataclass
 class AppConfig:
     audio: AudioCfg = field(default_factory=AudioCfg)
@@ -114,6 +135,7 @@ class AppConfig:
     lang: LangCfg = field(default_factory=LangCfg)
     translate: TranslateCfg = field(default_factory=TranslateCfg)
     seg: SegmenterCfg = field(default_factory=SegmenterCfg)
+    speaker: SpeakerCfg = field(default_factory=SpeakerCfg)
     overlay: OverlayCfg = field(default_factory=OverlayCfg)
     preset: str = "balanced"      # fast | balanced | accurate
     hf_endpoint: str = ""         # e.g. https://hf-mirror.com for regions where huggingface.co is slow

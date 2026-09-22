@@ -64,9 +64,16 @@ class FakeTranslator(Translator):
     name = "fake-tr"
     streaming = True
 
-    def __init__(self, delay=0.0):
+    def __init__(self, delay=0.0, can_correct=False, correct_fn=None):
         self.delay = delay
         self.calls = []                       # (text, src, tgt, context)
+        self.correct_calls = []               # (text, lang, context)
+        self.can_correct = can_correct
+        self._correct_fn = correct_fn or (lambda text: text)
+
+    def correct(self, text, lang, *, context=()):
+        self.correct_calls.append((text, lang, list(context)))
+        return self._correct_fn(text)
 
     def translate(self, text, src, tgt, *, context=(), on_delta=None, cancel=None):
         self.calls.append((text, src, tgt, list(context)))
@@ -203,6 +210,57 @@ def test_auto_language_is_sticky_and_low_confidence_outlier_is_redecoded(monkeyp
         third = sorted(h.lines.values(), key=lambda l: l.id)[2]
         assert third.src == "redecoded" and third.src_lang == "zh"
         assert (True, "zh") in h.rec.calls                          # decoded again with the established language
+
+
+def test_low_confidence_final_text_is_flagged_uncertain(monkeypatch):
+    class Rec(FakeRecognizer):
+        def transcribe(self, audio, language, *, final, prompt=""):
+            res = super().transcribe(audio, language, final=final, prompt=prompt)
+            if final:
+                res.confidence = 0.1                                   # garbled decode: e.g. overlapping voices
+            return res
+
+    with Harness(monkeypatch, Rec(texts={1: "ok", 2: "a longer sentence"}), FakeTranslator(), two_sentences()) as h:
+        assert h.wait(lambda: sum(l.dst_final for l in h.lines.values()) >= 2)
+        ordered = [h.lines[i] for i in sorted(h.lines)]
+        assert ordered[0].uncertain_reason == ""                       # too short to bother flagging
+        assert "把握较低" in ordered[1].uncertain_reason
+
+
+def test_confident_final_text_is_not_flagged(monkeypatch):
+    with Harness(monkeypatch, FakeRecognizer(texts={1: "a perfectly normal sentence"}), FakeTranslator(),
+                 one_sentence()) as h:
+        assert h.wait(lambda: any(l.dst_final for l in h.lines.values()))
+        assert next(iter(h.lines.values())).uncertain_reason == ""
+
+
+def two_sentences():
+    return ScriptedSource([(0.3, 0), (2.0, .9), (1.2, 0), (2.0, .9), (1.5, 0)])
+
+
+def test_source_correction_replaces_the_displayed_text_when_enabled(monkeypatch):
+    cfg = AppConfig()
+    cfg.translate.correct_source = True
+    tr = FakeTranslator(can_correct=True, correct_fn=lambda t: t.replace("電源", "店员"))
+    with Harness(monkeypatch, FakeRecognizer(texts={1: "你打電源啊"}), tr, one_sentence(), cfg) as h:
+        assert h.wait(lambda: any(l.dst_final for l in h.lines.values()))
+        assert h.wait(lambda: next(iter(h.lines.values())).src == "你打店员啊")
+        assert tr.correct_calls and tr.correct_calls[0][0] == "你打電源啊"
+
+
+def test_source_correction_is_off_by_default_and_needs_a_correction_capable_translator(monkeypatch):
+    cfg = AppConfig()
+    cfg.translate.correct_source = True
+    tr = FakeTranslator()                                          # can_correct defaults to False
+    with Harness(monkeypatch, FakeRecognizer(texts={1: "你打電源啊"}), tr, one_sentence(), cfg) as h:
+        assert h.wait(lambda: any(l.dst_final for l in h.lines.values()))
+        assert not tr.correct_calls
+
+    tr2 = FakeTranslator(can_correct=True, correct_fn=lambda t: t.replace("電源", "店员"))
+    with Harness(monkeypatch, FakeRecognizer(texts={1: "你打電源啊"}), tr2, one_sentence()) as h:  # correct_source off
+        assert h.wait(lambda: any(l.dst_final for l in h.lines.values()))
+        time.sleep(0.2)
+        assert not tr2.correct_calls
 
 
 def test_source_that_stops_delivering_packets_still_finalises(monkeypatch):

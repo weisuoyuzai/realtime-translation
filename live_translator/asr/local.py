@@ -9,6 +9,7 @@ from typing import Callable
 import numpy as np
 
 from ..config import AsrCfg
+from ..download import report_download
 from ..languages import normalize_lang
 from ..runtime import models_dir, recommended_asr_model, resolve_asr_device
 from .base import AsrError, AsrResult, Recognizer
@@ -18,6 +19,32 @@ log = logging.getLogger(__name__)
 
 # Tiny/base models tend to read an initial_prompt back as the transcript, so they don't get one.
 _PROMPT_SAFE = ("small", "medium", "large", "distil", "turbo")
+
+
+# The files faster_whisper.utils.download_model asks the hub for.
+_FW_PATTERNS = ("config.json", "preprocessor_config.json", "model.bin", "tokenizer.json", "vocabulary.*")
+
+# filters.keep_segment already drops anything below -1.6 as "mostly guessing"; map the remaining range to 0..1
+# so the pipeline can flag text that survived filtering but was still a low-confidence decode (garbled audio,
+# overlapping speakers, heavy noise) without a second model or extra work.
+_LOGPROB_FLOOR = -1.6
+
+
+def _confidence(avg_logprob: float) -> float:
+    return max(0.0, min(1.0, (avg_logprob - _LOGPROB_FLOOR) / -_LOGPROB_FLOOR))
+
+
+def _repo_id(name: str) -> str | None:
+    """Hub repo behind a model name ("large-v3" → "Systran/faster-whisper-large-v3"); None for a folder or unknown name."""
+    if os.path.isdir(name):
+        return None
+    if "/" in name:
+        return name
+    try:
+        from faster_whisper.utils import _MODELS
+        return _MODELS.get(name)
+    except ImportError:
+        return None
 
 
 class LocalWhisper(Recognizer):
@@ -51,7 +78,12 @@ class LocalWhisper(Recognizer):
                 self._model = build(True)
             except Exception:
                 say(f"本地还没有模型 {name}，正在下载（首次使用，可能需要几分钟）…")
-                self._model = build(False)
+                repo = _repo_id(name)
+                if repo is None:                                # a local folder path: nothing to watch
+                    self._model = build(False)
+                else:
+                    with report_download(repo, name, say, _FW_PATTERNS):
+                        self._model = build(False)
             self.model_name, self.device, self.compute_type = name, device, compute
             self.name = f"本地 Whisper {name} · {device}"
             say("预热识别引擎…")
@@ -96,17 +128,20 @@ class LocalWhisper(Recognizer):
                 compression_ratio_threshold=2.4,
             )
             kept = []
+            logprobs = []
             for seg in segments:
                 stats = SegStats(seg.text, seg.avg_logprob, seg.no_speech_prob, seg.compression_ratio)
                 if keep_segment(stats):
                     kept.append(seg.text.strip())
+                    logprobs.append(seg.avg_logprob)
         except Exception as e:
             raise AsrError(f"识别失败：{e}") from e
 
         text = clean_text(" ".join(kept), prompt if use_prompt else "")
         return AsrResult(text=text, language=normalize_lang(info.language),
                          language_prob=float(info.language_probability or 0.0),
-                         elapsed_ms=(time.perf_counter() - t0) * 1000)
+                         elapsed_ms=(time.perf_counter() - t0) * 1000,
+                         confidence=_confidence(min(logprobs)) if logprobs else 1.0)
 
     def close(self) -> None:
         self._model = None

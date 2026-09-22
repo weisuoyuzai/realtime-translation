@@ -240,14 +240,21 @@ _SKIP_EXES = {"audiodg.exe", "textinputhost.exe", "applicationframehost.exe", "s
 
 
 def list_audio_apps() -> list[AudioApp]:
-    """Apps that own an audio session or a visible window, sound-producing ones first."""
+    """Apps that own an audio session or a visible window, sound-producing ones first.
+
+    One entry per executable — unless several *independent* instances of it are running (separate process trees,
+    e.g. Chrome started with different ``--user-data-dir`` or an app launched twice). Those are listed one by one as
+    ``name (PID n)`` with key ``exe#pid`` so a single instance can be captured on its own.
+
+    What cannot be split: windows and tabs of ONE browser instance. Chrome/Edge render all their sound in a single
+    "audio service" child process, so the operating system only ever sees one audio source for all of them."""
     import os
     import psutil
 
     me = os.getpid()
     titles = _visible_window_titles()
     sessions = _audio_session_pids()
-    apps: dict[str, AudioApp] = {}
+    apps: dict[tuple[str, int], AudioApp] = {}
 
     def add(pid: int, active: bool) -> None:
         try:
@@ -258,14 +265,11 @@ def list_audio_apps() -> list[AudioApp]:
         if exe.lower() in _SKIP_EXES or pid == me:
             return
         root = _root_process(proc)
-        key = exe.lower()
-        app = apps.get(key)
+        app = apps.get((exe.lower(), root.pid))
         if app is None:
-            app = apps[key] = AudioApp(key=exe, name=exe[:-4] if exe.lower().endswith(".exe") else exe,
-                                       pid=root.pid)
+            app = apps[(exe.lower(), root.pid)] = AudioApp(
+                key=exe, name=exe[:-4] if exe.lower().endswith(".exe") else exe, pid=root.pid)
         app.active = app.active or active
-        if active:
-            app.pid = root.pid                 # prefer the tree that is actually making noise
         title = titles.get(pid) or titles.get(root.pid)
         if title and not app.title:
             app.title = title
@@ -274,15 +278,30 @@ def list_audio_apps() -> list[AudioApp]:
         add(pid, active)
     for pid in titles:
         add(pid, False)
-    return sorted(apps.values(), key=lambda a: (not a.active, a.name.lower()))
+    per_exe: dict[str, list[AudioApp]] = {}
+    for (exe, _root), app in apps.items():
+        per_exe.setdefault(exe, []).append(app)
+    for group in per_exe.values():
+        if len(group) > 1:                                   # several independent instances: tell them apart
+            for app in group:                                # (a single instance keeps the plain, restart-proof key)
+                app.key, app.name = f"{app.key}#{app.pid}", f"{app.name} (PID {app.pid})"
+    return sorted(apps.values(), key=lambda a: (not a.active, a.name.lower(), a.pid))
 
 
 def resolve_app_pid(key: str) -> int | None:
-    """Pid of the process tree root for executable ``key`` (e.g. ``chrome.exe``), or None if not running."""
-    for app in list_audio_apps():
-        if app.key.lower() == key.lower():
-            return app.pid
+    """Pid of the process tree root for ``key`` — an executable name (``chrome.exe``: its tree root; the one that
+    is playing sound if there are several) or ``chrome.exe#1234`` for one specific instance. None if not running."""
     import psutil
+    if "#" in key:
+        exe, _, pid = key.rpartition("#")
+        try:
+            p = psutil.Process(int(pid))
+            return p.pid if p.name().lower() == exe.lower() else None
+        except (ValueError, psutil.Error):
+            return None
+    matches = [a for a in list_audio_apps() if a.key.lower() == key.lower() or a.key.lower().startswith(key.lower() + "#")]
+    if matches:
+        return max(matches, key=lambda a: a.active).pid         # several instances: prefer the one making noise
     for proc in psutil.process_iter(["name"]):
         if (proc.info["name"] or "").lower() == key.lower():
             return _root_process(proc).pid

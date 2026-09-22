@@ -40,7 +40,8 @@ def create_source(cfg: AudioCfg) -> AudioSource:
                 raise AudioSourceError("请先选择要捕获的应用")
             pid = windows.resolve_app_pid(cfg.app_key)
             if pid is None:
-                raise AudioSourceError(f"找不到正在运行的 {cfg.app_name or cfg.app_key}，请先启动它")
+                raise AudioSourceError(f"找不到正在运行的 {cfg.app_name or cfg.app_key}，请先启动它"
+                                       "（同一个应用开了多个实例时，请点「刷新」重新选择）")
             return windows.ProcessLoopbackSource(pid, cfg.app_name or cfg.app_key)
         return windows.SystemLoopbackSource()
 

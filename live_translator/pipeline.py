@@ -3,7 +3,8 @@
 Threads (all daemon):
   capture callback (owned by the audio source)  → bounded queue, never blocks the OS audio thread
   segmenter   resample + Silero VAD + utterance state machine
-  asr         one worker; interim (partial) requests are "latest wins" so it never falls behind
+  asr         one worker; interim (partial) requests are "latest wins" so it never falls behind; when speaker
+              tracking is on, each final utterance also gets a voiceprint here (~50 ms) → Line.speaker
   translate   final translations, in order, streamed; keeps the running conversation context
   draft       optional: translates interim text while the speaker is still talking; cancelled by finals
 """
@@ -28,6 +29,8 @@ from .glossary import asr_hint, parse_glossary
 from .languages import base_lang, normalize_lang, same_language
 from .models import Line
 from .resample import Resampler
+from .runtime import models_dir
+from .speaker import MIN_EMBED_S, SpeakerEmbedder, SpeakerTracker, load_embedder
 from .segmenter import SegEvent, Segmenter
 from .text_utils import guess_language
 from .translate import TranslateError, Translator, create_translator
@@ -41,6 +44,8 @@ LineCallback = Callable[[Line], None]
 _MIN_DRAFT_CHARS = 6
 _MAX_UTTERANCE_HARD_CAP_S = 28.0                   # Whisper's window is 30 s
 _KEEP_LINES = 400
+_LOW_CONFIDENCE = 0.28                             # below this, flag the line instead of silently trusting it
+_LOW_CONFIDENCE_MIN_CHARS = 4                       # don't flag short utterances: noisy scoring, low stakes
 
 
 class _AsrQueue:
@@ -82,7 +87,9 @@ class _TranscriptWriter:
             return
         with self._lock:
             ts = datetime.fromtimestamp(line.created).strftime("%H:%M:%S")
-            self._f.write(f"[{ts}] ({line.src_lang or '?'}) {line.src}\n")
+            who = f"[说话人 {line.speaker}] " if line.speaker else ""
+            warn = "⚠ " if line.uncertain_reason else ""
+            self._f.write(f"[{ts}] ({line.src_lang or '?'}) {who}{warn}{line.src}\n")
             if line.dst:
                 self._f.write(f"           → {line.dst}\n")
             self._f.flush()
@@ -104,12 +111,15 @@ class Pipeline:
         self._audio_q: queue.Queue[tuple[np.ndarray, int]] = queue.Queue(maxsize=400)
         self._asr_q = _AsrQueue()
         self._tr_q: queue.Queue[tuple[int, str, str, float] | None] = queue.Queue()
+        self._cor_q: queue.Queue[tuple[int, str, str] | None] = queue.Queue()
 
         self._lines: dict[int, Line] = {}
         self._lock = threading.RLock()
         self._context: deque[tuple[str, str]] = deque(maxlen=max(0, cfg.translate.context_size))
         self._tracker = LanguageTracker()
 
+        self._embedder: SpeakerEmbedder | None = None
+        self._speakers = SpeakerTracker(cfg.speaker.similarity, cfg.speaker.max_speakers)
         self._recognizer: Recognizer | None = None
         self._translator: Translator | None = None
         self._segmenter: Segmenter | None = None
@@ -148,6 +158,7 @@ class Pipeline:
         if self._draft_cancel:
             self._draft_cancel[1].set()
         self._tr_q.put(None)
+        self._cor_q.put(None)
         for t in self._threads:
             if t is not threading.current_thread():
                 t.join(timeout=2.0)
@@ -178,11 +189,21 @@ class Pipeline:
             if self._stop.is_set():
                 return
 
+            if cfg.speaker.enabled:
+                try:
+                    self._embedder = load_embedder(lambda m: self._status("loading", m), models_dir())
+                except Exception as e:
+                    log.exception("speaker model failed to load")
+                    self._status("warn", f"说话人识别模型加载失败，本次不区分说话人：{e}")
+            if self._stop.is_set():
+                return
+
             self._segmenter = Segmenter(SileroVAD(), dataclasses.replace(
                 cfg.seg, max_utterance_s=min(cfg.seg.max_utterance_s, _MAX_UTTERANCE_HARD_CAP_S)))
             self._writer = _TranscriptWriter(cfg.save_transcript, cfg.transcripts_dir)
             for name, fn in (("segmenter", self._segment_loop), ("asr", self._asr_loop),
-                             ("translate", self._translate_loop), ("draft", self._draft_loop)):
+                             ("translate", self._translate_loop), ("draft", self._draft_loop),
+                             ("correct", self._correct_loop)):
                 th = threading.Thread(target=fn, name=name, daemon=True)
                 self._threads.append(th)
                 th.start()
@@ -315,24 +336,52 @@ class Pipeline:
                     self._update(ev.utt_id, src=text, src_lang=lang, src_final=False)
                     self._maybe_draft(ev.utt_id, text, lang)
                 continue
-            self._on_final_text(ev, text, lang, res.elapsed_ms)
+            self._on_final_text(ev, text, lang, res.elapsed_ms, res.confidence)
 
-    def _on_final_text(self, ev: SegEvent, text: str, lang: str, asr_ms: float) -> None:
+    def _on_final_text(self, ev: SegEvent, text: str, lang: str, asr_ms: float, confidence: float = 1.0) -> None:
         self._cancel_draft(ev.utt_id)
         if not text:
             self._update(ev.utt_id, removed=True)
             return
         tgt = self.cfg.lang.target
+        speaker, reason = self._speaker_of(ev)
+        if not reason and confidence < _LOW_CONFIDENCE and len(text) >= _LOW_CONFIDENCE_MIN_CHARS:
+            reason = "识别把握较低，可能有误（环境噪音、多人说话重叠等都会造成这种情况）"
+        self._maybe_correct(ev.utt_id, text, lang)
         passthrough = self._translator is None or same_language(lang, tgt)
         if passthrough:
             line = self._update(ev.utt_id, src=text, src_lang=lang, src_final=True, asr_ms=asr_ms, dst="",
                                 dst_final=True, dst_draft=False, skipped=self._translator is not None,
+                                speaker=speaker, uncertain_reason=reason,
                                 latency_ms=(time.monotonic() - ev.t_speech_end) * 1000)
             if line:
                 self._save(line)
             return
-        self._update(ev.utt_id, src=text, src_lang=lang, src_final=True, asr_ms=asr_ms, dst_lang=tgt)
+        self._update(ev.utt_id, src=text, src_lang=lang, src_final=True, asr_ms=asr_ms, dst_lang=tgt,
+                     speaker=speaker, uncertain_reason=reason)
         self._tr_q.put((ev.utt_id, text, lang, ev.t_speech_end))
+
+    def _speaker_of(self, ev: SegEvent) -> tuple[int, str]:
+        """Speaker number for a finished utterance (0 when tracking is off or failed), and a reason to flag the
+        line as uncertain when the voiceprint looks like a blend of two known speakers ("" otherwise)."""
+        if self._embedder is None:
+            return 0, ""
+        try:
+            dur = len(ev.audio) / 16000
+            emb = self._embedder(ev.audio) if dur >= MIN_EMBED_S else None
+            # ambiguity must be judged against the centroids as they stood *before* this embedding teaches them
+            # anything, or a blended voiceprint learned into its closer match would erase its own signature
+            ambiguous = self._speakers.ambiguous(emb, dur)
+            speaker = self._speakers.assign(emb, dur)
+            reason = "检测到疑似多人同时说话，识别可能不准确" if ambiguous else ""
+            return speaker, reason
+        except Exception:
+            log.exception("speaker identification failed")
+            return 0, ""
+
+    def reset_speakers(self) -> None:
+        """Forget everyone heard so far (new meeting / different people): numbering starts again at 1."""
+        self._speakers.reset()
 
     # ── translation ──────────────────────────────────────────────────────────
 
@@ -374,6 +423,33 @@ class Pipeline:
                                 latency_ms=(time.monotonic() - t_end) * 1000)
             if line:
                 self._save(line)
+
+    # ── source correction ───────────────────────────────────────────────────────
+
+    def _maybe_correct(self, utt_id: int, text: str, lang: str) -> None:
+        """Queue an LLM pass that fixes likely ASR mis-hearings in the *displayed original text* itself (opt-in:
+        one extra request per sentence). Runs alongside translation, not instead of it."""
+        tr = self._translator
+        if self.cfg.translate.correct_source and tr is not None and tr.can_correct:
+            self._cor_q.put((utt_id, text, lang))
+
+    def _correct_loop(self) -> None:
+        tr = self._translator
+        while not self._stop.is_set():
+            try:
+                job = self._cor_q.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            if job is None or tr is None:
+                continue
+            utt_id, text, lang = job
+            try:
+                fixed = tr.correct(text, lang, context=list(self._context))
+            except Exception:
+                log.exception("source correction crashed")
+                continue
+            if fixed and fixed != text:
+                self._update(utt_id, lambda l: l is not None and l.src == text, src=fixed)
 
     def _maybe_draft(self, utt_id: int, text: str, lang: str) -> None:
         if not (self.cfg.translate.draft and self._translator) or same_language(lang, self.cfg.lang.target):

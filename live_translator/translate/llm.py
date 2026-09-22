@@ -16,7 +16,7 @@ import httpx
 from ..glossary import parse_glossary, prompt_block
 from ..text_utils import clean_translation, looks_like_language
 from .base import DeltaCallback, TranslateError, Translator
-from .prompts import build_messages
+from .prompts import build_correction_messages, build_messages
 
 log = logging.getLogger(__name__)
 
@@ -38,6 +38,7 @@ def default_extra_body(base_url: str, model: str) -> dict:
 
 class LLMTranslator(Translator):
     streaming = True
+    can_correct = True
 
     def __init__(self, base_url: str, api_key: str, model: str, *, extra_body: str = "",
                  glossary: str = "", topic: str = "", timeout: float = 30.0, label: str = ""):
@@ -89,6 +90,21 @@ class LLMTranslator(Translator):
             out = retry or out
         return out
 
+    def correct(self, text: str, lang: str, *, context: Sequence[tuple[str, str]] = ()) -> str:
+        text = text.strip()
+        if not text:
+            return text
+        messages = build_correction_messages(text, lang, context, self._gloss, self._topic)
+        limit = max(32, min(512, int(len(text) * 2) + 32))
+        try:
+            out = self._complete(messages, limit)
+        except TranslateError:
+            log.info("source correction failed; keeping the original text", exc_info=True)
+            return text
+        out = out.strip()
+        # same sanity check translate() uses: a corrupted or empty reply must never replace good text
+        return out if out and looks_like_language(out, lang, text) else text
+
     def close(self) -> None:
         self._client.close()
 
@@ -123,8 +139,12 @@ class LLMTranslator(Translator):
               max_tokens: int | None = None, client: httpx.Client | None = None) -> str:
         messages = build_messages(text, src, tgt, context, self._gloss, self._topic)
         limit = max_tokens or max(64, min(1024, int(len(text) * 3) + 48))
+        return self._complete(messages, limit, on_delta, cancel, client)
+
+    def _complete(self, messages: list[dict], max_tokens: int, on_delta=None, cancel=None,
+                  client: httpx.Client | None = None) -> str:
         for _ in range(4):
-            body = self._body(messages, limit)
+            body = self._body(messages, max_tokens)
             try:
                 return self._send(body, on_delta, cancel, client or self._client)
             except _BadRequest as e:

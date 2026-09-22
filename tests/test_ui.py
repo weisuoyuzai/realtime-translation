@@ -33,6 +33,7 @@ def test_panel_roundtrip_with_custom_values(qapp):
     cfg.translate.mode = "llm_local"
     cfg.translate.local.base_url, cfg.translate.local.model = "http://127.0.0.1:1234/v1", "gemma"
     cfg.translate.glossary, cfg.translate.topic, cfg.translate.draft = "GPU = 显卡", "hardware", True
+    cfg.translate.correct_source = True
     cfg.translate.nllb_model = "JustFrederik/nllb-200-distilled-1.3B-ct2-int8"
     cfg.audio.source, cfg.audio.mic_device = "mic", ""
     panel.load(cfg)
@@ -42,6 +43,7 @@ def test_panel_roundtrip_with_custom_values(qapp):
     assert (out.asr.remote_base_url, out.asr.remote_api_key, out.asr.remote_model) == ("http://h/v1", "k", "m")
     assert out.translate.mode == "llm_local" and out.translate.local.model == "gemma"
     assert out.translate.glossary == "GPU = 显卡" and out.translate.topic == "hardware" and out.translate.draft
+    assert out.translate.correct_source
     assert out.translate.nllb_model.endswith("1.3B-ct2-int8")
     assert out.audio.source == "mic"
 
@@ -93,6 +95,11 @@ def test_validate_messages():
     assert "DeepL" in validate(c)
 
 
+def shown(view: TranscriptView) -> str:
+    """Everything the transcript currently displays (its rows are widgets, not one text document)."""
+    return "\n".join(t for r in view._rows.values() for t in (r.meta.text(), r.src.text(), r.dst.text(), r.err.text()))
+
+
 def test_transcript_upsert_replace_remove_and_text(qapp):
     v = TranscriptView()
     v.upsert(Line(1, src="Hello", src_final=True))
@@ -100,7 +107,7 @@ def test_transcript_upsert_replace_remove_and_text(qapp):
     v.upsert(Line(2, src="noise", src_final=False))
     v.upsert(Line(2, removed=True))
     v._render()
-    text = v.toPlainText()
+    text = shown(v)
     assert "Hello there" in text and "你好" in text and "noise" not in text and "延迟 0.9s" in text
     assert v.plain_text().count("→") == 1
 
@@ -109,7 +116,7 @@ def test_transcript_escapes_html(qapp):
     v = TranscriptView()
     v.upsert(Line(1, src="<b>bold</b> & more", dst="<script>x</script>", src_final=True, dst_final=True))
     v._render()
-    assert "<b>bold</b> & more" in v.toPlainText() and "<script>x</script>" in v.toPlainText()
+    assert "<b>bold</b> & more" in shown(v) and "<script>x</script>" in shown(v)       # shown literally, never as markup
 
 
 def test_overlay_shows_translation_else_recognised_text(qapp):
@@ -183,7 +190,7 @@ def test_start_stop_lifecycle_and_live_lines(qapp, window):
     pipe.on_level(0.1)
     assert wait_until(qapp, lambda: "1.2s" in w.stats.text())
     w.transcript._render()
-    assert "你好" in w.transcript.toPlainText() and w.meter.value() > 0
+    assert "你好" in shown(w.transcript) and w.meter.value() > 0
 
     w.btn.click()
     assert wait_until(qapp, lambda: w.state == "idle")

@@ -8,7 +8,7 @@ from live_translator.languages import normalize_lang, same_language
 from live_translator.resample import Resampler
 from live_translator.text_utils import (clean_translation, guess_language, looks_like_language,
                                         split_sentences, visible_text)
-from live_translator.translate.prompts import build_messages
+from live_translator.translate.prompts import build_correction_messages, build_messages
 
 import numpy as np
 
@@ -127,6 +127,18 @@ def test_prompt_contains_context_as_chat_history_and_glossary():
     assert "hardware review" in msgs[0]["content"]
     assert [m["role"] for m in msgs[1:]] == ["user", "assistant", "user"]     # the empty pair was skipped
     assert msgs[-1]["content"] == "It works."
+
+
+def test_correction_prompt_asks_for_same_language_cleanup_not_translation():
+    msgs = build_correction_messages("我看到電源大聲指責", "zh", [("Hi.", "你好。"), ("", "x")],
+                                     prompt_block(parse_glossary("店员")), "客服录音")
+    assert msgs[0]["role"] == "system"
+    sysmsg = msgs[0]["content"]
+    assert "SAME language" in sysmsg and "店员 (keep unchanged)" in sysmsg and "客服录音" in sysmsg
+    assert "never rephrase, summarise, translate" in sysmsg.lower()
+    assert [m["role"] for m in msgs[1:]] == ["user", "assistant", "user"]     # the empty pair was skipped
+    assert msgs[1]["content"] == "Hi." and msgs[2]["content"] == "Hi."        # echoed, not translated
+    assert msgs[-1]["content"] == "我看到電源大聲指責"
 
 
 # ── config ───────────────────────────────────────────────────────────────────

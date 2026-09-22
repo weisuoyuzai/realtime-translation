@@ -13,8 +13,8 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, 
                                QPushButton, QSlider, QSpinBox, QTabWidget, QTreeWidget, QTreeWidgetItem,
                                QVBoxLayout, QWidget)
 
-from .. import runtime, storage
-from ..config import AppConfig, AsrCfg, SegmenterCfg
+from .. import ruby, runtime, storage
+from ..config import AppConfig, AsrCfg, SegmenterCfg, SpeakerCfg
 from .settings_panel import _form, _hint
 
 TAB_STORAGE, TAB_NETWORK, TAB_OVERLAY, TAB_ADVANCED = range(4)
@@ -234,14 +234,35 @@ class PreferencesDialog(QDialog):
         h.setContentsMargins(0, 0, 0, 0)
         h.addWidget(self.ov_opacity, 1)
         h.addWidget(self.ov_opacity_label)
+        self.ov_sentences = QSpinBox()
+        self.ov_sentences.setRange(1, 8)
+        self.ov_sentences.setSuffix(" 句")
+        self.ov_sentences.setToolTip("悬浮字幕同时显示的句数。1 = 只显示当前这一句；2 以上时，前面的句子留在当前句上方"
+                                     "（颜色稍暗），最旧的先消失。每句完整显示，可以折成多行")
+        self.ov_auto_h = QCheckBox("自动调整高度（关闭后保持你拖出来的高度，放不下的旧字幕从顶部裁掉）")
         self.ov_source = QCheckBox("在译文上方显示原文")
         self.ov_click = QCheckBox("鼠标穿透（字幕条不拦截点击）")
+        self.ov_learn = QCheckBox("学习模式：中文汉字上标拼音、日文汉字上标假名，字幕前显示朗读按钮")
+        self.ov_ruby = QComboBox()
+        for label, v in (("译文和原文都标", "both"), ("只标译文", "dst"), ("只标原文", "src")):
+            self.ov_ruby.addItem(label, v)
+        self.ov_tts_read = QComboBox()
+        self.ov_tts_read.addItem("译文", "dst")
+        self.ov_tts_read.addItem("原文", "src")
         w = QWidget()
         lay = QVBoxLayout(w)
-        lay.addWidget(_form(("译文字号", self.ov_font), ("背景不透明度", op)))
+        lay.addWidget(_form(("译文字号", self.ov_font), ("同时显示句数", self.ov_sentences), ("背景不透明度", op)))
         lay.addWidget(self.ov_source)
+        lay.addWidget(self.ov_auto_h)
         lay.addWidget(self.ov_click)
-        lay.addWidget(_hint("字幕条位置和大小直接拖动、缩放即可，会自动记住。"))
+        lay.addSpacing(8)
+        lay.addWidget(QLabel("<b>学习模式</b>"))
+        lay.addWidget(self.ov_learn)
+        lay.addWidget(_form(("注音标在", self.ov_ruby), ("朗读按钮读出", self.ov_tts_read)))
+        lay.addWidget(_hint("注音显示在悬浮字幕和主窗口的字幕历史里，各按文本自己的语言标注（中文拼音 / 日文假名）。朗读使用系统自带的语音，需要系统里装有对应语言的语音包；"
+                            "开启「鼠标穿透」时悬浮字幕上的朗读按钮点不到，会被隐藏（主窗口里的仍可用）。"
+                            + ("" if ruby.available() else f"　⚠ 未安装 {' '.join(ruby.missing_packages())}，对应语言暂时无法注音：pip install {' '.join(ruby.missing_packages())}")))
+        lay.addWidget(_hint("字幕条位置直接拖动，会自动记住。拖右下角改宽度；上下拖则把高度固定成你拖出来的值（同时关闭「自动调整高度」）。"))
         lay.addStretch(1)
         return w
 
@@ -273,8 +294,16 @@ class PreferencesDialog(QDialog):
         self.compute = QComboBox()
         for label, v in COMPUTE_TYPES:
             self.compute.addItem(label, v)
+        self.spk_threshold = QDoubleSpinBox()
+        self.spk_threshold.setRange(0.2, 0.9)
+        self.spk_threshold.setSingleStep(0.05)
+        self.spk_threshold.setToolTip("声音多相似才算同一个人。调高：更容易把同一个人分成两个；调低：更容易把不同的人并成一个")
+        self.spk_max = QSpinBox()
+        self.spk_max.setRange(0, 12)
+        self.spk_max.setSpecialValueText("不限")
+        self.spk_max.setToolTip("最多区分几个人；达到上限后新的声音会归到最像的那个人")
         reset = QPushButton("恢复默认")
-        reset.clicked.connect(lambda: self._set_advanced(SegmenterCfg(), AsrCfg()))
+        reset.clicked.connect(lambda: self._set_advanced(SegmenterCfg(), AsrCfg(), SpeakerCfg()))
         w = QWidget()
         lay = QVBoxLayout(w)
         lay.addWidget(QLabel("<b>断句</b>"))
@@ -282,13 +311,17 @@ class PreferencesDialog(QDialog):
                             ("中间结果间隔", self.partial)))
         lay.addWidget(QLabel("<b>本地识别</b>"))
         lay.addWidget(_form(("最终识别束宽 (beam)", self.beam), ("计算精度", self.compute)))
+        lay.addWidget(QLabel("<b>说话人区分</b>（在主界面勾选「区分说话人」后生效）"))
+        lay.addWidget(_form(("相似度阈值", self.spk_threshold), ("最多说话人数", self.spk_max)))
         lay.addWidget(_hint(f"默认值：阈值 {d.vad_threshold}、停顿 {d.min_silence_ms} ms、最长 {d.max_utterance_s:.0f} 秒、"
                             f"间隔 {d.partial_interval_ms} ms。主界面选择“速度 / 准确度”预设会覆盖这里的断句与束宽数值。"))
         lay.addWidget(reset, 0, Qt.AlignmentFlag.AlignLeft)
         lay.addStretch(1)
         return w
 
-    def _set_advanced(self, seg: SegmenterCfg, asr: AsrCfg) -> None:
+    def _set_advanced(self, seg: SegmenterCfg, asr: AsrCfg, spk: SpeakerCfg) -> None:
+        self.spk_threshold.setValue(spk.similarity)
+        self.spk_max.setValue(spk.max_speakers)
         self.vad.setValue(seg.vad_threshold)
         self.min_sil.setValue(seg.min_silence_ms)
         self.max_utt.setValue(seg.max_utterance_s)
@@ -312,9 +345,14 @@ class PreferencesDialog(QDialog):
         self.ov_font.setValue(o.font_size)
         self.ov_opacity.setValue(int(round(o.opacity * 100)))
         self.ov_opacity_label.setText(f"{self.ov_opacity.value()}%")
+        self.ov_sentences.setValue(o.max_sentences)
+        self.ov_auto_h.setChecked(o.auto_height)
         self.ov_source.setChecked(o.show_source)
         self.ov_click.setChecked(o.click_through)
-        self._set_advanced(cfg.seg, cfg.asr)
+        self.ov_learn.setChecked(o.learning)
+        self.ov_tts_read.setCurrentIndex(max(0, self.ov_tts_read.findData(o.tts_read)))
+        self.ov_ruby.setCurrentIndex(max(0, self.ov_ruby.findData(o.ruby_scope)))
+        self._set_advanced(cfg.seg, cfg.asr, cfg.speaker)
         if self._running:
             for w in self._storage_widgets:
                 w.setEnabled(False)
@@ -330,9 +368,13 @@ class PreferencesDialog(QDialog):
         o = out.overlay
         o.font_size, o.opacity = self.ov_font.value(), self.ov_opacity.value() / 100
         o.show_source, o.click_through = self.ov_source.isChecked(), self.ov_click.isChecked()
+        o.max_sentences, o.auto_height = self.ov_sentences.value(), self.ov_auto_h.isChecked()
+        o.learning, o.tts_read = self.ov_learn.isChecked(), self.ov_tts_read.currentData()
+        o.ruby_scope = self.ov_ruby.currentData()
         s = out.seg
         s.vad_threshold, s.min_silence_ms = round(self.vad.value(), 2), self.min_sil.value()
         s.max_utterance_s, s.partial_interval_ms = self.max_utt.value(), self.partial.value()
+        out.speaker.similarity, out.speaker.max_speakers = round(self.spk_threshold.value(), 2), self.spk_max.value()
         out.asr.beam_final = self.beam.value()
         out.asr.compute_type = self.compute.currentData()
         return out

@@ -187,10 +187,12 @@ def test_storage_is_locked_while_running(qapp, tmp_path, monkeypatch):
 def test_reset_button_restores_advanced_defaults(qapp):
     cfg = AppConfig()
     cfg.seg.min_silence_ms, cfg.asr.beam_final = 900, 7
+    cfg.speaker.similarity, cfg.speaker.max_speakers = 0.8, 3
     dlg = PreferencesDialog(cfg)
-    assert dlg.min_sil.value() == 900
-    dlg._set_advanced(prefs.SegmenterCfg(), prefs.AsrCfg())
+    assert dlg.min_sil.value() == 900 and dlg.spk_threshold.value() == 0.8 and dlg.spk_max.value() == 3
+    dlg._set_advanced(prefs.SegmenterCfg(), prefs.AsrCfg(), prefs.SpeakerCfg())
     assert dlg.min_sil.value() == 450 and dlg.beam.value() == 3
+    assert dlg.spk_threshold.value() == 0.55 and dlg.spk_max.value() == 0
 
 
 # ── main window: menus and applying preferences ──────────────────────────────

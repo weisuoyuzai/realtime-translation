@@ -21,6 +21,10 @@ def setup_environment(hf_endpoint: str = "") -> None:
     """Call once at startup, before any model is loaded."""
     os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
     os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
+    # hf-xet (installed by default with huggingface_hub) chunks large files across many small parallel requests and
+    # is prone to stalling outright on multi-GB files like large-v3's model.bin - with or without a mirror. A plain
+    # ranged HTTP download is slower per-connection but does not hang, so it wins here unconditionally.
+    os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
     if hf_endpoint:
         os.environ["HF_ENDPOINT"] = hf_endpoint.rstrip("/")
     _add_cuda_dll_dirs()

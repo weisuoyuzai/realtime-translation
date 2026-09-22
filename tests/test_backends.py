@@ -105,6 +105,31 @@ def test_error_messages_are_actionable(server):
         LLMTranslator("http://127.0.0.1:9/v1", "", "m").translate("Hi", "en", "zh-Hans")
 
 
+def test_correct_fixes_the_source_text_using_recent_turns_as_context(server):
+    server.reply = lambda user_text, n: "我看到店员大聲指責" if user_text == "我看到電源大聲指責" else user_text
+    out = make(server).correct("我看到電源大聲指責", "zh", context=[("早前那句", "訳文")])
+    assert out == "我看到店员大聲指責"
+    req = server.chat_requests[-1]
+    assert [m["role"] for m in req["messages"]] == ["system", "user", "assistant", "user"]
+    assert req["messages"][1]["content"] == "早前那句" and req["messages"][2]["content"] == "早前那句"
+    assert "clean" in req["messages"][0]["content"].lower()
+
+
+def test_correct_keeps_the_original_when_the_reply_looks_wrong(server):
+    server.reply = lambda user_text, n: "this is not even chinese"
+    assert make(server).correct("我看到電源大聲指責", "zh") == "我看到電源大聲指責"
+
+
+def test_correct_keeps_the_original_on_empty_text(server):
+    assert make(server).correct("", "zh") == ""
+    assert server.chat_requests == []
+
+
+def test_correct_keeps_the_original_when_the_server_errors(server):
+    server.chat_status = 500
+    assert make(server).correct("我看到電源大聲指責", "zh") == "我看到電源大聲指責"
+
+
 def test_warmup_and_list_models(server):
     make(server).warmup()
     assert server.chat_requests[-1]["max_tokens"] == 8

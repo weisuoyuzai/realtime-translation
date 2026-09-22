@@ -184,7 +184,10 @@ class SettingsPanel(QWidget):
         self.app_row = app_row
         self.mic_combo = QComboBox()
         self.app_hint = _hint("只捕获所选应用（含其子进程）的声音，其他应用和系统提示音不会混入。"
-                              + ("首次使用需授予「屏幕录制」权限。" if audio_mod.IS_MAC else ""))
+                              + ("首次使用需授予「屏幕录制」权限。" if audio_mod.IS_MAC else
+                                 "注意：浏览器的所有窗口和标签页共用同一个音频进程，系统层面分不开，只能一起捕获。"
+                                 "只想要其中一个时：把其它标签页「静音网站」，或用 chrome --user-data-dir=… 另开一个独立实例"
+                                 "（它会作为单独一项列出，名字带 PID）。"))
         self.src_form = _form(("来源", self.src_kind), ("应用", app_row), ("设备", self.mic_combo))
         lay = QVBoxLayout(g)
         lay.addWidget(self.src_form)
@@ -383,6 +386,7 @@ class SettingsPanel(QWidget):
         self.tr_context.setRange(0, 12)
         self.tr_context.setToolTip("把前几句原文/译文作为上下文喂给模型，代词和术语更连贯")
         self.tr_draft = QCheckBox("说话时就出草稿译文（更快看到结果，会多消耗调用）")
+        self.tr_correct = QCheckBox("同时修正显示的原文（识别错的同音字/人名等，多一次调用；仅 LLM 翻译方式生效）")
 
         lay = QVBoxLayout(g)
         lay.addWidget(_form(("方式", self.tr_mode)))
@@ -391,6 +395,7 @@ class SettingsPanel(QWidget):
         lay.addWidget(self.tr_test_result)
         lay.addWidget(_form(("主题", self.topic), ("术语表", self.glossary), ("上下文句数", self.tr_context)))
         lay.addWidget(self.tr_draft)
+        lay.addWidget(self.tr_correct)
 
         self.tr_mode.currentIndexChanged.connect(self._on_tr_mode)
         self.tr_test.clicked.connect(lambda: self._run_test("tr"))
@@ -511,10 +516,15 @@ class SettingsPanel(QWidget):
         self.preset = _combo(PRESET_CHOICES)
         self.perf_hint = _hint("速度优先：更短的停顿判定 + 草稿译文；准确优先：更大的束搜索与更长上下文。")
         self.save_tx = QCheckBox("保存字幕记录到文本文件")
+        self.spk_cb = QCheckBox("区分说话人（按声音分辨，字幕里标出 [1] [2]…）")
+        self.spk_cb.setToolTip("每句话取一个声纹，和之前听到的人比较：像就是同一个人，不像就新增一个人。\n"
+                               "首次使用会下载约 28 MB 的声纹模型（3D-Speaker CAM++，本地运行，每句约增加 0.04 秒，对背景音乐比较耐受）。\n"
+                               "不到 1 秒的短句沿用上一位说话人，1–2 秒的只归入已认识的人。多人同时说话、背景音乐会影响准确度。")
         lay = QVBoxLayout(g)
         lay.addWidget(_form(("预设", self.preset)))
         lay.addWidget(self.perf_hint)
         lay.addWidget(self.save_tx)
+        lay.addWidget(self.spk_cb)
         self.preset.currentIndexChanged.connect(self._on_preset)
         return g
 
@@ -568,8 +578,10 @@ class SettingsPanel(QWidget):
         self.glossary.setPlainText(t.glossary)
         self.tr_context.setValue(t.context_size)
         self.tr_draft.setChecked(t.draft)
+        self.tr_correct.setChecked(t.correct_source)
         _select(self.preset, cfg.preset)
         self.save_tx.setChecked(cfg.save_transcript)
+        self.spk_cb.setChecked(cfg.speaker.enabled)
         self._loading = False
         self._on_src_kind()
         self._on_tr_mode(fetch=False)
@@ -603,8 +615,10 @@ class SettingsPanel(QWidget):
         t.deepl_key, t.deepl_free = self.deepl_key.text().strip(), self.deepl_free.isChecked()
         t.topic, t.glossary = self.topic.text().strip(), self.glossary.toPlainText().strip()
         t.context_size, t.draft = self.tr_context.value(), self.tr_draft.isChecked()
+        t.correct_source = self.tr_correct.isChecked()
         cfg.preset = self.preset.currentData()
         cfg.save_transcript = self.save_tx.isChecked()
+        cfg.speaker.enabled = self.spk_cb.isChecked()
         return cfg
 
     def apply_general(self, cfg: AppConfig) -> None:
@@ -613,6 +627,7 @@ class SettingsPanel(QWidget):
         b = self._base
         b.models_dir, b.transcripts_dir, b.proxy, b.hf_endpoint = cfg.models_dir, cfg.transcripts_dir, cfg.proxy, cfg.hf_endpoint
         b.seg = copy.deepcopy(cfg.seg)
+        b.speaker.similarity, b.speaker.max_speakers = cfg.speaker.similarity, cfg.speaker.max_speakers
         b.asr.beam_final, b.asr.compute_type = cfg.asr.beam_final, cfg.asr.compute_type
 
     def set_running(self, running: bool) -> None:

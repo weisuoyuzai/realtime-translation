@@ -10,6 +10,10 @@ huggingface_hub>=0.24
 PySide6>=6.5
 sounddevice>=0.4.6
 psutil>=5.9
+pypinyin>=0.51
+pykakasi>=2.3
+
+# Learning mode uses pypinyin (pinyin over Chinese characters), pykakasi (furigana over Japanese kanji) and the OS speech voices via PySide6's QtTextToSpeech.
 
 # Windows: per-application capture (WASAPI process loopback), system loopback, app discovery
 proc-tap>=1.1; sys_platform == "win32"

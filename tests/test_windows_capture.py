@@ -78,3 +78,64 @@ def test_capture_start_does_not_import_scipy():
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, cwd=root, timeout=90)
     assert r.stdout.strip().endswith("False"), r.stdout + r.stderr
+
+
+class _Proc:
+    def __init__(self, pid, name, parent=None):
+        self.pid, self._name, self._parent = pid, name, parent
+
+    def name(self):
+        return self._name
+
+    def parent(self):
+        return self._parent
+
+
+def _fake_world(monkeypatch, procs, sessions, titles):
+    import psutil
+    from live_translator.audio import windows
+    by_pid = {p.pid: p for p in procs}
+    monkeypatch.setattr(psutil, "Process", lambda pid: by_pid[pid] if pid in by_pid else (_ for _ in ()).throw(psutil.NoSuchProcess(pid)))
+    monkeypatch.setattr(psutil, "process_iter", lambda attrs=None: [type("I", (), {"info": {"name": p.name()}, "pid": p.pid})() for p in procs])
+    monkeypatch.setattr(windows, "_audio_session_pids", lambda: sessions)
+    monkeypatch.setattr(windows, "_visible_window_titles", lambda: titles)
+    monkeypatch.setattr(windows, "_root_process", lambda proc: _climb(proc))
+
+
+def _climb(proc):
+    cur = proc
+    while cur.parent() is not None and cur.parent().name().lower() == proc.name().lower():
+        cur = cur.parent()
+    return cur
+
+
+def test_one_browser_instance_is_one_entry_however_many_child_processes_it_has(monkeypatch):
+    from live_translator.audio.windows import list_audio_apps, resolve_app_pid
+    root = _Proc(100, "chrome.exe")
+    kids = [_Proc(101, "chrome.exe", root), _Proc(102, "chrome.exe", root)]
+    audio = _Proc(103, "chrome.exe", root)                       # the "audio service" utility process owns the session
+    _fake_world(monkeypatch, [root, *kids, audio], {103: True}, {100: "Video - Google Chrome"})
+    apps = list_audio_apps()
+    assert [(a.key, a.name, a.pid, a.active) for a in apps] == [("chrome.exe", "chrome", 100, True)]
+    assert resolve_app_pid("chrome.exe") == 100
+
+
+def test_independent_instances_of_one_app_are_listed_and_captured_separately(monkeypatch):
+    from live_translator.audio.windows import list_audio_apps, resolve_app_pid
+    a, b = _Proc(100, "chrome.exe"), _Proc(200, "chrome.exe")     # two process trees, e.g. two --user-data-dir
+    a_audio, b_audio = _Proc(101, "chrome.exe", a), _Proc(201, "chrome.exe", b)
+    _fake_world(monkeypatch, [a, b, a_audio, b_audio], {201: True, 101: False}, {100: "Docs", 200: "Meeting"})
+    apps = list_audio_apps()
+    assert [(x.key, x.pid, x.active, x.title) for x in apps] == [("chrome.exe#200", 200, True, "Meeting"),
+                                                                 ("chrome.exe#100", 100, False, "Docs")]
+    assert apps[0].name == "chrome (PID 200)" and "PID 200" in apps[0].label
+    assert resolve_app_pid("chrome.exe#200") == 200 and resolve_app_pid("chrome.exe#100") == 100
+    assert resolve_app_pid("chrome.exe") == 200                   # a plain saved key prefers the one making noise
+    assert resolve_app_pid("chrome.exe#999") is None              # that instance has exited
+    assert resolve_app_pid("msedge.exe#100") is None              # pid reused by another program: not a match
+
+
+def test_different_programs_never_get_pid_suffixes(monkeypatch):
+    from live_translator.audio.windows import list_audio_apps
+    _fake_world(monkeypatch, [_Proc(1, "chrome.exe"), _Proc(2, "msedge.exe")], {1: True, 2: False}, {})
+    assert [a.key for a in list_audio_apps()] == ["chrome.exe", "msedge.exe"]

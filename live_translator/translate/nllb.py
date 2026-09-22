@@ -9,6 +9,7 @@ import os
 import threading
 from typing import Callable, Sequence
 
+from ..download import report_download
 from ..languages import nllb_code
 from ..runtime import cuda_available, models_dir
 from ..text_utils import (guess_language, is_cjk_lang, normalize_cjk_punct, split_sentences,
@@ -51,7 +52,8 @@ class NllbTranslator(Translator):
         except Exception:
             self._progress(f"本地还没有 {self.model_id}，正在下载（首次使用；600M int8 版约 0.6 GB）…")
             try:
-                path = snapshot_download(self.model_id, allow_patterns=patterns, cache_dir=models_dir())
+                with report_download(self.model_id, self.model_id.split("/")[-1], self._progress, patterns):
+                    path = snapshot_download(self.model_id, allow_patterns=patterns, cache_dir=models_dir())
             except Exception as e:
                 raise TranslateError(f"下载离线翻译模型失败：{e}") from e
         use_cuda = self.device == "cuda" or (self.device == "auto" and cuda_available())

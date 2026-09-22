@@ -86,6 +86,18 @@ def test_transcribe_filters_hallucinated_segments_and_reports_language(monkeypat
     assert res.text == "Hello there." and res.language == "en" and res.language_prob > 0.9
 
 
+def test_confidence_reflects_the_worst_kept_segments_avg_logprob(monkeypatch):
+    install_fake(monkeypatch, cached=True)
+    rec, _ = load()
+    rec._model.transcribe = lambda audio, **kw: (
+        iter([FakeSegment("Hello", avg=-0.2), FakeSegment("there", avg=-1.0)]), FakeInfo())
+    res = rec.transcribe(np.zeros(16000, dtype=np.float32), None, final=True)
+    assert res.confidence == pytest.approx((-1.0 + 1.6) / 1.6)                  # dragged down by the worse segment
+
+    rec._model.transcribe = lambda audio, **kw: (iter([]), FakeInfo())          # nothing kept: no signal either way
+    assert rec.transcribe(np.zeros(16000, dtype=np.float32), None, final=True).confidence == 1.0
+
+
 def test_final_uses_beam_and_partial_is_greedy_and_prompt_only_for_capable_models(monkeypatch):
     install_fake(monkeypatch, cached=True)
     rec, _ = load(AsrCfg(model="small", device="cpu", beam_final=4))
@@ -98,3 +110,18 @@ def test_final_uses_beam_and_partial_is_greedy_and_prompt_only_for_capable_model
     tiny, _ = load(AsrCfg(model="tiny", device="cpu"))
     tiny.transcribe(np.zeros(16000, dtype=np.float32), "en", final=True, prompt="Kubernetes")
     assert tiny._model.kw["initial_prompt"] is None                     # tiny models parrot the prompt back
+
+
+def test_download_progress_reports_bytes_and_percentage(monkeypatch, tmp_path):
+    import time
+    from live_translator import download, runtime
+
+    monkeypatch.setattr(runtime, "_models_dir", str(tmp_path))
+    monkeypatch.setattr(download, "_expected_bytes", lambda repo, patterns: 4 * 1024 ** 2)
+    blobs = tmp_path / "models--Systran--faster-whisper-large-v3" / "blobs"
+    blobs.mkdir(parents=True)
+    msgs: list[str] = []
+    with download.report_download("Systran/faster-whisper-large-v3", "large-v3", msgs.append, interval=0.05):
+        (blobs / "abc.incomplete").write_bytes(b"x" * 2 * 1024 ** 2)
+        time.sleep(0.4)
+    assert any("large-v3" in m and "2 MB / 4 MB" in m and "50%" in m for m in msgs), msgs

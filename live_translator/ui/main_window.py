@@ -12,15 +12,17 @@ from PySide6.QtGui import QAction, QGuiApplication, QKeySequence
 from PySide6.QtWidgets import (QCheckBox, QFileDialog, QFrame, QHBoxLayout, QLabel, QMainWindow, QMessageBox,
                                QProgressBar, QPushButton, QScrollArea, QSplitter, QVBoxLayout, QWidget)
 
-from .. import __version__, runtime
+from .. import __version__, ruby, runtime
 from ..config import AppConfig, config_dir, save_config
 from ..models import Line
 from ..pipeline import Pipeline
+from ..text_utils import guess_language
 from .bridge import Bridge
 from .overlay import SubtitleOverlay
 from .preferences import TAB_STORAGE, PreferencesDialog, open_folder
 from .settings_panel import SettingsPanel
 from .transcript import TranscriptView
+from .tts import Tts
 
 _DOT = {"idle": "#8b95a1", "loading": "#e0a800", "ready": "#2a9d4a", "warn": "#e08a00", "error": "#d33"}
 
@@ -60,6 +62,10 @@ class MainWindow(QMainWindow):
 
         self.overlay = SubtitleOverlay(cfg.overlay)
         self.overlay.closed.connect(lambda: self.overlay_cb.setChecked(False))
+        self.tts = Tts(self)
+        self._voice_warned: set[str] = set()                  # languages already announced as having no voice
+        self.tts.unavailable.connect(self._on_voice_missing)
+        self.tts.speaking_changed.connect(lambda on: on and self.overlay.set_speaker_warning(""))
 
         # ── top bar ──
         self.btn = QPushButton("▶  开始")
@@ -82,6 +88,10 @@ class MainWindow(QMainWindow):
         self.click_cb.setToolTip("开启后字幕条不拦截鼠标，可以直接点击下面的窗口")
         self.click_cb.setChecked(cfg.overlay.click_through)
         self.click_cb.toggled.connect(self._toggle_click_through)
+        self.learn_cb = QCheckBox("学习模式")
+        self.learn_cb.setToolTip("汉字上方标注拼音，并在字幕前显示朗读按钮（点一下朗读这句，再点一下停止）")
+        self.learn_cb.setChecked(cfg.overlay.learning)
+        self.learn_cb.toggled.connect(self._toggle_learning)
         clear = QPushButton("清空")
         clear.clicked.connect(self._clear)
         copy = QPushButton("复制")
@@ -99,6 +109,7 @@ class MainWindow(QMainWindow):
         top.addSpacing(8)
         top.addWidget(self.overlay_cb)
         top.addWidget(self.click_cb)
+        top.addWidget(self.learn_cb)
         top.addSpacing(8)
         for b in (clear, copy, export):
             top.addWidget(b)
@@ -113,7 +124,10 @@ class MainWindow(QMainWindow):
         scroll.setWidget(self.panel)
         scroll.setMinimumWidth(390)
         self.transcript = TranscriptView()
-        self.transcript.setStyleSheet("QTextBrowser{padding:10px 14px;border:none;}")
+        self.transcript.set_learning(cfg.overlay.learning, cfg.overlay.ruby_scope)
+        self.transcript.speak_requested.connect(self._speak_line)
+        self.overlay.speak_requested.connect(self._speak_line)
+        self.overlay.learning_changed.connect(self.learn_cb.setChecked)
         split = QSplitter()
         split.addWidget(scroll)
         split.addWidget(self.transcript)
@@ -162,6 +176,7 @@ class MainWindow(QMainWindow):
         act(m, "导出字幕…", self._export, "Ctrl+S")
         act(m, "复制全部字幕", lambda: QGuiApplication.clipboard().setText(self.transcript.plain_text()))
         act(m, "清空字幕", self._clear, "Ctrl+L")
+        self.act_reset_spk = act(m, "重置说话人编号（换了一批人时用）", self._reset_speakers)
         m.addSeparator()
         act(m, "打开字幕记录文件夹", lambda: open_folder(self._transcripts_path()))
         act(m, "打开配置文件夹", lambda: open_folder(str(config_dir())))
@@ -178,8 +193,10 @@ class MainWindow(QMainWindow):
         self.act_overlay = act(m, "悬浮字幕", self.overlay_cb.setChecked, "Ctrl+Shift+O", True, self.overlay_cb.isChecked())
         self.act_click = act(m, "字幕条鼠标穿透", self.click_cb.setChecked, None, True, self.click_cb.isChecked())
         self.act_source = act(m, "悬浮字幕显示原文", self.overlay._toggle_source, None, True, self.overlay.cfg.show_source)
+        self.act_learn = act(m, "学习模式（拼音 + 朗读）", self.learn_cb.setChecked, None, True, self.learn_cb.isChecked())
         self.overlay_cb.toggled.connect(self.act_overlay.setChecked)      # keep the toolbar and the menu in step
         self.click_cb.toggled.connect(self.act_click.setChecked)
+        self.learn_cb.toggled.connect(self.act_learn.setChecked)
 
         m = mb.addMenu("帮助(&H)")
         act(m, "关于 Live Translator", self._about)
@@ -199,6 +216,8 @@ class MainWindow(QMainWindow):
         self.overlay.apply_style()
         self.overlay.update()
         self.click_cb.setChecked(oc.click_through)
+        self.learn_cb.setChecked(oc.learning)
+        self.transcript.set_learning(oc.learning, oc.ruby_scope)
         self.act_source.blockSignals(True)
         self.act_source.setChecked(oc.show_source)
         self.act_source.blockSignals(False)
@@ -235,6 +254,7 @@ class MainWindow(QMainWindow):
         cfg.overlay = self.overlay.cfg
         cfg.overlay.enabled = self.overlay_cb.isChecked()
         cfg.overlay.click_through = self.click_cb.isChecked()
+        cfg.overlay.learning = self.learn_cb.isChecked()
         return cfg
 
     def _start(self) -> None:
@@ -248,12 +268,15 @@ class MainWindow(QMainWindow):
             save_config(cfg)
         except OSError:
             pass
+        if cfg.overlay.learning:
+            self._check_voice()
         self._latencies.clear()
         self._counted.clear()
         self.state = "starting"
         self.btn.setText("■  停止")
         self.panel.set_running(True)
         self.pipeline = Pipeline(cfg, self.bridge.on_line, self.bridge.on_status, self.bridge.on_level)
+        self.overlay.reset_speakers()
         self.pipeline.start()
         self._on_status("loading", "正在启动…")
 
@@ -328,6 +351,60 @@ class MainWindow(QMainWindow):
     def _toggle_click_through(self, on: bool) -> None:
         self.overlay.cfg.click_through = on
         self.overlay.apply_style()
+
+    def _reset_speakers(self) -> None:
+        self.overlay.reset_speakers()
+        if self.pipeline is not None:
+            self.pipeline.reset_speakers()
+            self.statusBar().showMessage("已重置说话人编号：之后的发言从 1 号重新排。", 6000)
+        else:
+            self.statusBar().showMessage("说话人编号在每次点「开始」时自动重置。", 6000)
+
+    def _toggle_learning(self, on: bool) -> None:
+        self.overlay.set_learning(on)
+        self.transcript.set_learning(on, self.overlay.cfg.ruby_scope)
+        if not on:
+            self.tts.stop()
+            return
+        if ruby.missing_packages():
+            names = " ".join(ruby.missing_packages())
+            self.statusBar().showMessage(f"未安装 {names}，对应语言无法注音（pip install {names}）；朗读功能不受影响。", 8000)
+        self._check_voice()
+
+    def _check_voice(self) -> None:
+        """Learning mode is on: tell the user now (not at the first click) if the language it will read has no voice."""
+        lang = (self.panel.tgt_lang if self.overlay.cfg.tts_read == "dst" else self.panel.src_lang).currentData()
+        if lang and lang != "auto":
+            problem = self.tts.voice_problem(lang)
+            if problem:
+                self._on_voice_missing(*problem)
+
+    def _on_voice_missing(self, key: str, message: str) -> None:
+        """Three quiet-to-loud signals: the speaker icon gets crossed out (tooltip explains), the status bar shows
+        it, and — once per language per session — a non-blocking dialog says how to fix it."""
+        self.statusBar().showMessage(message.replace("\n", " "), 12000)
+        self.overlay.set_speaker_warning(message.split("\n")[0])
+        if key not in self._voice_warned:
+            self._voice_warned.add(key)
+            self._show_voice_notice(message)
+
+    def _show_voice_notice(self, message: str) -> None:
+        box = QMessageBox(QMessageBox.Icon.Information, "没有可用的朗读语音", message, QMessageBox.StandardButton.Ok, self)
+        box.setInformativeText("其他功能（包括注音）不受影响。")
+        box.setWindowModality(Qt.WindowModality.NonModal)         # never blocks the live subtitles
+        box.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        box.show()
+
+    def _speak_line(self, line: Line | None) -> None:
+        """Read a subtitle aloud: the translation or the original, per the preference (falls back to whichever exists)."""
+        if line is None:
+            return
+        dst = (line.dst, line.dst_lang)
+        src = (line.src, line.src_lang)
+        for text, lang in (src, dst) if self.overlay.cfg.tts_read == "src" else (dst, src):
+            if text.strip():
+                self.tts.toggle(text, lang or guess_language(text))
+                return
 
     def _clear(self) -> None:
         self.transcript.clear_all()

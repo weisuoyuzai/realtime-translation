@@ -46,6 +46,9 @@ grab("sounddevice")                             # _sounddevice_data carries Port
 grab("_sounddevice_data")
 grab("nvidia.cublas", data=False)               # only present with requirements-cuda.txt (Windows CUDA build)
 grab("nvidia.cudnn", data=False)
+grab("pypinyin", libs=False, submodules=True)    # learning mode: pinyin dictionaries
+grab("pykakasi", libs=False, submodules=True)    # learning mode: furigana (its dictionary files are package data)
+hiddenimports += ["PySide6.QtTextToSpeech"]         # imported lazily by ui/tts.py; PyInstaller's hook adds the speech plugins
 hiddenimports += ["socksio"]                    # httpx[socks]: imported lazily, invisible to static analysis
 if IS_WIN:
     for pkg in ("proctap", "pyaudiowpatch", "pycaw"):
