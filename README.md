@@ -67,7 +67,7 @@ python -m venv .venv && .venv/Scripts/pip install -r requirements.txt      # Win
 
 工具栏勾选「学习模式」（或右键字幕条 / 偏好设置里开启）：
 
-- **注音**：中文的每个汉字上方标带声调的拼音（多音字按上下文判断），日文的汉字上方标平假名（送假名不标，如 取り組み → と・く）。「注音标在」可选译文 / 原文 / 两者（各按文本自己的语言标注），悬浮字幕和主窗口的字幕历史都会显示；依赖 `pypinyin` 与 `pykakasi`（已在 requirements.txt 中，缺哪个就缺哪种语言的注音）。日文读音来自词典，个别词可能不准。
+- **注音**：中文的每个汉字上方标带声调的拼音（多音字按上下文判断），日文的汉字上方标平假名（送假名不标，如 取り組み → と・く），韩文每个词上方标按实际发音的罗马字（如 감사합니다 → gamsahamnida），英、法、德、西、葡、意、俄等其他语言每个词上方标 IPA 国际音标（泰语、越南语、菲律宾语暂不支持）。「注音标在」可选译文 / 原文 / 两者（各按文本自己的语言标注），悬浮字幕和主窗口的字幕历史都会显示；依赖 `pypinyin`、`pykakasi` 与 `espeakng-loader`（已在 requirements.txt 中，缺哪个就缺哪种语言的注音；韩文罗马字无需额外依赖）。日文读音与 IPA 来自词典 / 规则，个别词可能不准；IPA 按单词逐个标注，不含连读。
 - **朗读**：字幕前出现一个小喇叭，点击朗读这句，再点一次停止；主窗口每条字幕前也有，右键字幕还可复制原文 / 译文。
   朗读内容可选译文或原文，使用系统自带的语音（Windows：设置 → 时间和语言 → 语音，需装有对应语言的语音包，缺少时会在状态栏提示）。
   「鼠标穿透」开启时悬浮字幕收不到点击，喇叭会被隐藏，主窗口里的仍可用。
@@ -185,7 +185,7 @@ live_translator/
   asr/               local.py (faster-whisper) · remote.py (OpenAI 兼容) · filters.py (幻觉过滤)
   translate/         llm.py (流式 + 参数协商) · nllb.py (离线) · deepl.py · prompts.py
   ui/                主窗口 · 设置面板 · 字幕历史 · 悬浮字幕 · ruby_text.py（带注音的换行文字）· tts.py（朗读）
-  ruby.py            学习模式的分词与拼音 / 假名注音（纯逻辑）
+  ruby.py            学习模式的分词与注音：拼音 / 假名 / 韩文罗马字 / IPA（纯逻辑）
   native/macos/      lt_sck_capture.swift
 tests/               单元 + 管线 + GUI 测试（含本地假 OpenAI 服务器）
 packaging/           PyInstaller 入口与 spec

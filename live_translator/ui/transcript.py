@@ -11,6 +11,8 @@ from PySide6.QtCore import QTimer, Qt, Signal
 from PySide6.QtGui import QFont, QGuiApplication, QPalette
 from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QMenu, QScrollArea, QVBoxLayout, QWidget)
 
+from . import theme
+
 from ..languages import lang_native
 from ..models import Line
 from .ruby_text import RubyText, SpeakerButton, speaker_color
@@ -27,20 +29,27 @@ def _px(size: int, weight: int = 400, italic: bool = False) -> QFont:
     return f
 
 
-class _Row(QWidget):
+class _Row(QFrame):
     """One utterance. Talks to the view only through a signal (no back-reference: rows and view would form a cycle
     that Python's garbage collector then tears down at an arbitrary moment)."""
     speak_requested = Signal(object)          # the Line to read
 
     def __init__(self):
         super().__init__()
+        self.setObjectName("row")
+        self.setProperty("current", "false")
+        self._current = False
         self.line: Line | None = None
-        self.meta = QLabel()
-        self.meta.setFont(_px(11))
+        self.time = QLabel()
+        self.time.setFont(theme.mono_font(11))
         self.spk = QLabel()                                   # "说话人 2", in that speaker's colour
         self.spk.setFont(_px(11, 600))
+        self.meta = QLabel()                                  # language · latency, under the text
+        self.meta.setFont(_px(11))
         self.src = RubyText(centered=False)
         self.dst = RubyText(centered=False)
+        self.state = QLabel()                                 # "● 草稿译文" / "● 正在识别…"
+        self.state.setFont(_px(11))
         self.wait = QLabel("翻译中…")
         self.wait.setFont(_px(13))
         self.warn = QLabel()
@@ -49,25 +58,36 @@ class _Row(QWidget):
         self.err = QLabel()
         self.err.setFont(_px(12))
         self.err.setWordWrap(True)
-        self.speaker = SpeakerButton(size=24)
+        self.speaker = SpeakerButton(size=26)
         self.speaker.clicked.connect(self._speak)
         for w in (self.meta, self.wait, self.warn, self.err):
             w.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        side = QVBoxLayout()
+        side.setContentsMargins(0, 2, 0, 0)
+        side.setSpacing(6)
+        side.addWidget(self.time)
+        side.addWidget(self.spk)
+        side.addStretch(1)
+        side_w = QWidget()
+        side_w.setFixedWidth(68)
+        side_w.setLayout(side)
         col = QVBoxLayout()
         col.setContentsMargins(0, 0, 0, 0)
-        col.setSpacing(2)
-        head = QHBoxLayout()
-        head.setSpacing(8)
-        head.addWidget(self.spk)
-        head.addWidget(self.meta, 1)
-        col.addLayout(head)
-        for w in (self.src, self.dst, self.wait, self.warn, self.err):
+        col.setSpacing(5)
+        for w in (self.src, self.dst, self.wait, self.state, self.warn, self.err, self.meta):
             col.addWidget(w)
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(0, 0, 0, 12)
-        lay.setSpacing(8)
-        lay.addWidget(self.speaker, 0, Qt.AlignmentFlag.AlignTop)
+        lay.setContentsMargins(14, 11, 12, 11)
+        lay.setSpacing(14)
+        lay.addWidget(side_w)
         lay.addLayout(col, 1)
+        lay.addWidget(self.speaker, 0, Qt.AlignmentFlag.AlignTop)
+
+    def set_current(self, on: bool) -> None:
+        if on != self._current:
+            self._current = on
+            self.setProperty("current", "true" if on else "false")
+            theme.repolish(self)
 
     def _speak(self) -> None:
         if self.line is not None:
@@ -75,8 +95,9 @@ class _Row(QWidget):
 
     def update_line(self, l: Line, c: dict[str, str], learning: bool, ruby_src: bool, ruby_dst: bool) -> None:
         self.line = l
-        ts = time.strftime("%H:%M:%S", time.localtime(l.created))
-        meta = [ts]
+        self.time.setText(time.strftime("%H:%M:%S", time.localtime(l.created)))
+        self.time.setStyleSheet(f"color:{c['meta']};")
+        meta = []
         if l.src_lang:
             meta.append(lang_native(l.src_lang))
         if l.dst_final and l.latency_ms:
@@ -86,11 +107,16 @@ class _Row(QWidget):
             meta.append("与目标语言相同，未翻译")
         self.meta.setText(" · ".join(meta))
         self.meta.setStyleSheet(f"color:{c['meta']};")
+        self.meta.setVisible(bool(meta))
         self.spk.setText(f"说话人 {l.speaker}" if l.speaker else "")
         self.spk.setStyleSheet(f"color:{speaker_color(l.speaker, c['dark'] == '1')};")
         self.spk.setVisible(bool(l.speaker))
 
         self.src.setFont(_px(13, italic=not l.src_final))
+        state = "● 正在识别…" if not l.src_final else "● 草稿译文，定稿后替换" if l.dst_draft else ""
+        self.state.setText(state)
+        self.state.setStyleSheet(f"color:{c['warn']};")
+        self.state.setVisible(bool(state))
         self.src.setColor(c["src"])
         self.src.setText(l.src + ("" if l.src_final else " …"), l.src_lang, ruby_src)
 
@@ -139,10 +165,13 @@ class TranscriptView(QScrollArea):
         self._body.setBackgroundRole(QPalette.ColorRole.Base)
         self._body.setAutoFillBackground(True)
         self._col = QVBoxLayout(self._body)
-        self._col.setContentsMargins(14, 10, 14, 10)
-        self._col.setSpacing(0)
+        self._col.setContentsMargins(24, 16, 24, 16)
+        self._col.setSpacing(4)
         self._hint = QLabel("点击「开始」后，字幕会显示在这里。")
         self._hint.setEnabled(False)                       # greyed like placeholder text
+        self._hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._hint.setMinimumHeight(120)
+        self._current: int | None = None
         self._col.addWidget(self._hint)
         self._col.addStretch(1)
         self.setWidget(self._body)
@@ -167,6 +196,9 @@ class TranscriptView(QScrollArea):
 
     def line(self, line_id: int) -> Line | None:
         return self._lines.get(line_id)
+
+    def count(self) -> int:
+        return len(self._order)
 
     def upsert(self, line: Line) -> None:
         if line.removed:
@@ -243,7 +275,20 @@ class TranscriptView(QScrollArea):
                 self._col.insertWidget(self._col.count() - 1, row)      # above the trailing stretch
             row.update_line(self._lines[i], c, self._learning, self._learning and self._scope in ("both", "src"),
                             self._learning and self._scope in ("both", "dst"))
+        self._mark_current()
         self._trim()
+
+    def _mark_current(self) -> None:
+        """Highlight the newest line — the one being spoken / translated right now."""
+        newest = next((i for i in reversed(self._order) if i in self._rows), None)
+        if newest == self._current:
+            return
+        old = self._rows.get(self._current) if self._current is not None else None
+        if old is not None:
+            old.set_current(False)
+        self._current = newest
+        if newest is not None:
+            self._rows[newest].set_current(True)
 
     def _trim(self) -> None:
         """Drop the oldest rows — but only while following the newest line: removing rows above the viewport
@@ -260,6 +305,8 @@ class TranscriptView(QScrollArea):
         if row is not None:
             self._col.removeWidget(row)
             row.deleteLater()
+        if line_id == self._current:
+            self._current = None
 
     # ── scrolling ────────────────────────────────────────────────────────────
 

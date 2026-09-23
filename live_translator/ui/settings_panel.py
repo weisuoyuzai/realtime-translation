@@ -4,8 +4,8 @@ from __future__ import annotations
 import copy
 import threading
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit,
+from PySide6.QtCore import QTimer, Qt, Signal
+from PySide6.QtWidgets import (QAbstractButton, QComboBox, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
                                QCompleter, QPlainTextEdit, QPushButton, QSizePolicy, QSpinBox, QStackedWidget, QVBoxLayout,
                                QWidget)
 
@@ -13,7 +13,9 @@ from .. import audio as audio_mod
 from ..config import AppConfig, apply_preset
 from ..languages import SOURCE_CHOICES, TARGET_CHOICES
 from ..runtime import cuda_available
+from . import theme
 from .bridge import Bridge
+from .widgets import Card, Segmented, Switch, icon_button
 
 WHISPER_MODELS = [
     ("自动（按硬件推荐）", "auto"),
@@ -67,6 +69,8 @@ TR_MODES = [
 ]
 
 PRESET_CHOICES = [("速度优先", "fast"), ("均衡", "balanced"), ("准确优先", "accurate")]
+
+_REFRESH_TIP = "重新扫描正在运行 / 正在发声的应用（● 表示正在发声）"
 
 
 class _Stack(QStackedWidget):
@@ -129,17 +133,39 @@ def _form(*rows) -> QWidget:
     w = QWidget()
     f = QFormLayout(w)
     f.setContentsMargins(0, 0, 0, 0)
+    f.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)       # small label above each field
+    f.setVerticalSpacing(6)
     f.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
     for label, widget in rows:
         f.addRow(label, widget) if label else f.addRow(widget)
+        lab = f.labelForField(widget)
+        if lab is not None:
+            lab.setObjectName("fieldLabel")
     return w
 
 
 def _hint(text: str) -> QLabel:
     l = QLabel(text)
+    l.setObjectName("hint")
     l.setWordWrap(True)
     l.setEnabled(False)          # dimmed
     return l
+
+
+def _body(g: QWidget) -> QVBoxLayout:
+    lay = QVBoxLayout(g)
+    lay.setContentsMargins(0, 0, 0, 0)
+    lay.setSpacing(12)
+    return lay
+
+
+def _set_result(out: QLabel, ok: bool | None, text: str) -> None:
+    out.setText(text)
+    out.setStyleSheet("" if ok is None else f"color:{theme.LIVE if ok else theme.DANGER}")
+
+
+# (icon, title) of the five steps, in order
+STEPS = [("audio", "音频来源"), ("languages", "语言"), ("mic", "语音识别"), ("sparkles", "翻译"), ("gauge", "速度 / 准确度")]
 
 
 class SettingsPanel(QWidget):
@@ -156,26 +182,98 @@ class SettingsPanel(QWidget):
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(10)
-        for g in (self._build_audio(), self._build_lang(), self._build_asr(), self._build_translate(),
-                  self._build_perf()):
-            lay.addWidget(g)
+        lay.setSpacing(4)
+        bodies = (self._build_audio(), self._build_lang(), self._build_asr(), self._build_translate(), self._build_perf())
+        self.cards: list[Card] = []
+        for (icon, title), body in zip(STEPS, bodies):
+            card = Card(icon, title, body)
+            card.toggled.connect(lambda on, c=card: on and self._only_open(c))
+            self.cards.append(card)
+            lay.addWidget(card)
         lay.addStretch(1)
+        self.cards[0].set_open(True)
         bridge.apps.connect(self._set_apps)
         bridge.test_result.connect(self._show_test)
+        self._summary_timer = QTimer(self)
+        self._summary_timer.setSingleShot(True)
+        self._summary_timer.setInterval(0)
+        self._summary_timer.timeout.connect(self._refresh_summaries)
+        for w in self.findChildren(QWidget):          # any edit anywhere refreshes the one-line summaries
+            sig = None
+            if isinstance(w, QComboBox) and w.isEditable():
+                sig = w.editTextChanged
+            elif isinstance(w, (QComboBox, Segmented)):
+                sig = w.currentIndexChanged
+            elif isinstance(w, QLineEdit) and not isinstance(w.parent(), QComboBox):
+                sig = w.textChanged
+            elif isinstance(w, QSpinBox):
+                sig = w.valueChanged
+            elif isinstance(w, QAbstractButton) and w.isCheckable() and not isinstance(w.parent(), Segmented):
+                sig = w.toggled
+            if sig is not None:
+                sig.connect(self._summary_timer.start)
+
+    # ── cards ────────────────────────────────────────────────────────────────
+
+    def _only_open(self, card: Card) -> None:
+        """Accordion: opening one step closes the others, so the column rarely needs scrolling."""
+        for c in self.cards:
+            if c is not card and c.is_open():
+                c.set_open(False)
+
+    def reveal(self, step: int) -> None:
+        self.cards[step].set_open(True)
+        self._only_open(self.cards[step])
+
+    def summaries(self) -> list[str]:
+        cfg = self.collect()
+        a, s, t = cfg.audio, cfg.asr, cfg.translate
+        if a.source == "app":
+            audio = f"指定应用 · {a.app_name or '未选择'}"
+        elif a.source == "mic":
+            audio = f"麦克风 · {self.mic_combo.currentText() or '系统默认'}"
+        else:
+            audio = "系统全部声音"
+        lang = f"{self.src_lang.currentText()} → {self.tgt_lang.currentText()}"
+        if s.mode == "local":
+            asr = f"本地 · {s.model} · {self.asr_device.currentText()}"
+        else:
+            asr = f"远程 · {self.asr_preset.currentText()} · {s.remote_model or '未填写模型'}"
+        if t.mode == "llm_remote":
+            tr = f"{self.trr_preset.currentText()} · {t.remote.model or '未填写模型'}"
+        elif t.mode == "llm_local":
+            tr = f"{self.trl_preset.currentText()} · {t.local.model or '未填写模型'}"
+        elif t.mode == "nllb":
+            tr = "内置离线 NLLB"
+        elif t.mode == "deepl":
+            tr = "DeepL"
+        else:
+            tr = "仅转写，不翻译"
+        if t.mode != "none" and t.context_size:
+            tr += f" · 上下文 {t.context_size} 句"
+        perf = [self.preset.currentText()]
+        if cfg.speaker.enabled:
+            perf.append("区分说话人")
+        if cfg.save_transcript:
+            perf.append("保存记录")
+        return [audio, lang, asr, tr, " · ".join(perf)]
+
+    def _refresh_summaries(self) -> None:
+        for card, text in zip(self.cards, self.summaries()):
+            card.set_summary(text)
 
     # ── audio ────────────────────────────────────────────────────────────────
 
-    def _build_audio(self) -> QGroupBox:
-        g = QGroupBox("① 音频来源")
-        self.src_kind = _combo([("系统全部声音", "system"), ("指定应用的声音", "app"), ("麦克风", "mic")])
+    def _build_audio(self) -> QWidget:
+        g = QWidget()
+        self.src_kind = Segmented([("系统", "system", "monitor"), ("应用", "app", "app"), ("麦克风", "mic", "mic")],
+                                  expand=True)
         if not audio_mod.app_capture_supported():
-            self.src_kind.model().item(1).setEnabled(False)
+            self.src_kind.setItemEnabled(1, False)
         self.app_combo = QComboBox()
         self.app_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
-        self.app_combo.setMinimumContentsLength(18)
-        self.app_refresh = QPushButton("刷新")
-        self.app_refresh.setToolTip("重新扫描正在运行 / 正在发声的应用（● 表示正在发声）")
+        self.app_combo.setMinimumContentsLength(12)
+        self.app_refresh = icon_button("refresh", _REFRESH_TIP, 14, "fieldBtn")
         app_row = QWidget()
         h = QHBoxLayout(app_row)
         h.setContentsMargins(0, 0, 0, 0)
@@ -188,8 +286,8 @@ class SettingsPanel(QWidget):
                                  "注意：浏览器的所有窗口和标签页共用同一个音频进程，系统层面分不开，只能一起捕获。"
                                  "只想要其中一个时：把其它标签页「静音网站」，或用 chrome --user-data-dir=… 另开一个独立实例"
                                  "（它会作为单独一项列出，名字带 PID）。"))
-        self.src_form = _form(("来源", self.src_kind), ("应用", app_row), ("设备", self.mic_combo))
-        lay = QVBoxLayout(g)
+        self.src_form = _form(("", self.src_kind), ("应用", app_row), ("设备", self.mic_combo))
+        lay = _body(g)
         lay.addWidget(self.src_form)
         lay.addWidget(self.app_hint)
         self._form_rows = self.src_form.layout()
@@ -214,7 +312,7 @@ class SettingsPanel(QWidget):
 
     def refresh_apps(self) -> None:
         self.app_refresh.setEnabled(False)
-        self.app_refresh.setText("扫描中…")
+        self.app_refresh.setToolTip("扫描中…")
 
         def work():
             try:
@@ -229,7 +327,7 @@ class SettingsPanel(QWidget):
     def _set_apps(self, apps: list) -> None:
         self._apps = apps
         self.app_refresh.setEnabled(True)
-        self.app_refresh.setText("刷新")
+        self.app_refresh.setToolTip(_REFRESH_TIP)
         selected = self.app_combo.currentData()                   # (key, name) tuple or None
         cur = selected[0] if selected else self._base.audio.app_key
         self.app_combo.blockSignals(True)
@@ -248,20 +346,20 @@ class SettingsPanel(QWidget):
 
     # ── language ─────────────────────────────────────────────────────────────
 
-    def _build_lang(self) -> QGroupBox:
-        g = QGroupBox("② 语言")
+    def _build_lang(self) -> QWidget:
+        g = QWidget()
         self.src_lang = _combo([(label, code) for code, label in SOURCE_CHOICES])
         self.tgt_lang = _combo([(label, code) for code, label in TARGET_CHOICES])
         self.lang_hint = _hint("自动检测会在多语言混杂时自动切换；如果只有一种语言，手动指定更快更准。")
-        lay = QVBoxLayout(g)
+        lay = _body(g)
         lay.addWidget(_form(("原语言", self.src_lang), ("翻译为", self.tgt_lang)))
         lay.addWidget(self.lang_hint)
         return g
 
     # ── ASR ──────────────────────────────────────────────────────────────────
 
-    def _build_asr(self) -> QGroupBox:
-        g = QGroupBox("③ 语音识别")
+    def _build_asr(self) -> QWidget:
+        g = QWidget()
         self.asr_mode = _combo([("本地（faster-whisper）", "local"), ("远程 API", "remote")])
 
         self.asr_model = _combo(WHISPER_MODELS, editable=True)
@@ -279,7 +377,7 @@ class SettingsPanel(QWidget):
         self.asr_url = _line("https://api.openai.com/v1")
         self.asr_key = _line("API Key", password=True)
         self.asr_rmodel = _line("whisper-1")
-        self.asr_rpartials = QCheckBox("识别中间结果（每次请求都计费，默认关闭）")
+        self.asr_rpartials = Switch("识别中间结果（每次请求都计费，默认关闭）")
         self.asr_test = QPushButton("测试连接")
         self.asr_test_result = QLabel()
         self.asr_test_result.setWordWrap(True)
@@ -295,7 +393,7 @@ class SettingsPanel(QWidget):
         self.asr_stack = _Stack()
         self.asr_stack.addWidget(local)
         self.asr_stack.addWidget(remote)
-        lay = QVBoxLayout(g)
+        lay = _body(g)
         lay.addWidget(_form(("方式", self.asr_mode)))
         lay.addWidget(self.asr_stack)
 
@@ -348,8 +446,8 @@ class SettingsPanel(QWidget):
         url.editingFinished.connect(lambda: self._auto_fetch(side))
         return w, url, key, model, extra, fetch, preset
 
-    def _build_translate(self) -> QGroupBox:
-        g = QGroupBox("④ 翻译")
+    def _build_translate(self) -> QWidget:
+        g = QWidget()
         self.tr_mode = _combo(TR_MODES)
 
         (remote, self.trr_url, self.trr_key, self.trr_model, self.trr_extra, self.trr_fetch, self.trr_preset) = self._llm_page(LLM_REMOTE_PRESETS, False)
@@ -363,7 +461,7 @@ class SettingsPanel(QWidget):
         nl.addWidget(_hint("完全离线、延迟极低，但译文质量不及大模型。首次使用自动下载。"))
 
         self.deepl_key = _line("DeepL API Key", password=True)
-        self.deepl_free = QCheckBox("免费版 Key（以 :fx 结尾）")
+        self.deepl_free = Switch("免费版 Key（以 :fx 结尾）")
         deepl = QWidget()
         dl = QVBoxLayout(deepl)
         dl.setContentsMargins(0, 0, 0, 0)
@@ -385,10 +483,10 @@ class SettingsPanel(QWidget):
         self.tr_context = QSpinBox()
         self.tr_context.setRange(0, 12)
         self.tr_context.setToolTip("把前几句原文/译文作为上下文喂给模型，代词和术语更连贯")
-        self.tr_draft = QCheckBox("说话时就出草稿译文（更快看到结果，会多消耗调用）")
-        self.tr_correct = QCheckBox("同时修正显示的原文（识别错的同音字/人名等，多一次调用；仅 LLM 翻译方式生效）")
+        self.tr_draft = Switch("说话时就出草稿译文（更快看到结果，会多消耗调用）")
+        self.tr_correct = Switch("同时修正显示的原文（识别错的同音字/人名等，多一次调用；仅 LLM 翻译方式生效）")
 
-        lay = QVBoxLayout(g)
+        lay = _body(g)
         lay.addWidget(_form(("方式", self.tr_mode)))
         lay.addWidget(self.tr_stack)
         lay.addWidget(self.tr_test)
@@ -437,8 +535,7 @@ class SettingsPanel(QWidget):
         btn.setEnabled(False)
         btn.setText("获取中…")
         if manual:
-            self.tr_test_result.setText("正在获取模型列表…")
-            self.tr_test_result.setStyleSheet("")
+            _set_result(self.tr_test_result, None, "正在获取模型列表…")
 
         def work():
             try:
@@ -456,8 +553,7 @@ class SettingsPanel(QWidget):
         cfg = self.collect()
         btn, out = (self.asr_test, self.asr_test_result) if which == "asr" else (self.tr_test, self.tr_test_result)
         btn.setEnabled(False)
-        out.setText("测试中…")
-        out.setStyleSheet("")
+        _set_result(out, None, "测试中…")
 
         def work():
             import time
@@ -496,32 +592,29 @@ class SettingsPanel(QWidget):
                 model.addItems(names)
                 model.setEditText(cur if cur or not names else names[0])   # never overwrite what the user chose/typed
                 note = "" if cur in names or not cur else f"（当前模型 {cur} 不在列表中，请确认名称）"
-                self.tr_test_result.setText(f"已获取 {len(names)} 个可用聊天模型，可在“模型”框里输入关键字过滤。{note}")
-                self.tr_test_result.setStyleSheet("")
+                _set_result(self.tr_test_result, None, f"已获取 {len(names)} 个可用聊天模型，可在“模型”框里输入关键字过滤。{note}")
             else:
                 self._fetched.pop(side, None)
                 if msg.startswith("!"):                     # manual click -> show the error; automatic attempts stay quiet
-                    self.tr_test_result.setText(msg[1:])
-                    self.tr_test_result.setStyleSheet("color:#d33")
+                    _set_result(self.tr_test_result, False, msg[1:])
             return
         btn, out = (self.asr_test, self.asr_test_result) if which == "asr" else (self.tr_test, self.tr_test_result)
         btn.setEnabled(True)
-        out.setText(("✓ " if ok else "✗ ") + msg)
-        out.setStyleSheet("color:#2a9d4a" if ok else "color:#d33")
+        _set_result(out, ok, ("✓ " if ok else "✗ ") + msg)
 
     # ── performance ──────────────────────────────────────────────────────────
 
-    def _build_perf(self) -> QGroupBox:
-        g = QGroupBox("⑤ 速度 / 准确度")
-        self.preset = _combo(PRESET_CHOICES)
+    def _build_perf(self) -> QWidget:
+        g = QWidget()
+        self.preset = Segmented(PRESET_CHOICES, expand=True)
         self.perf_hint = _hint("速度优先：更短的停顿判定 + 草稿译文；准确优先：更大的束搜索与更长上下文。")
-        self.save_tx = QCheckBox("保存字幕记录到文本文件")
-        self.spk_cb = QCheckBox("区分说话人（按声音分辨，字幕里标出 [1] [2]…）")
+        self.save_tx = Switch("保存字幕记录到文本文件")
+        self.spk_cb = Switch("区分说话人（按声音分辨，字幕里标出 [1] [2]…）")
         self.spk_cb.setToolTip("每句话取一个声纹，和之前听到的人比较：像就是同一个人，不像就新增一个人。\n"
                                "首次使用会下载约 28 MB 的声纹模型（3D-Speaker CAM++，本地运行，每句约增加 0.04 秒，对背景音乐比较耐受）。\n"
                                "不到 1 秒的短句沿用上一位说话人，1–2 秒的只归入已认识的人。多人同时说话、背景音乐会影响准确度。")
-        lay = QVBoxLayout(g)
-        lay.addWidget(_form(("预设", self.preset)))
+        lay = _body(g)
+        lay.addWidget(self.preset)
         lay.addWidget(self.perf_hint)
         lay.addWidget(self.save_tx)
         lay.addWidget(self.spk_cb)
@@ -589,6 +682,7 @@ class SettingsPanel(QWidget):
             self._auto_fetch("remote")             # app start with a saved key: populate the model list
         if a.source == "mic" and a.mic_device:
             _select(self.mic_combo, a.mic_device)
+        self._refresh_summaries()
 
     def collect(self) -> AppConfig:
         cfg = copy.deepcopy(self._base)

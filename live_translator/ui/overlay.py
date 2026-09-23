@@ -10,11 +10,12 @@ from __future__ import annotations
 
 from PySide6.QtCore import QPoint, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QPainter
-from PySide6.QtWidgets import QApplication, QHBoxLayout, QMenu, QSizeGrip, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QApplication, QFrame, QHBoxLayout, QMenu, QSizeGrip, QVBoxLayout, QWidget
 
 from ..config import OverlayCfg, ruby_wanted
 from ..models import Line
 from .ruby_text import RubyText, SpeakerButton, speaker_color
+from .widgets import icon_button
 
 _IDLE_HIDE_MS = 9000      # fade the text away when nothing new arrives, so the screen isn't cluttered
 _IDLE_HIDE_LEARN_MS = 30000   # …but give a learner time to read the ruby and press the speaker
@@ -73,6 +74,22 @@ class SubtitleOverlay(QWidget):
         lay.addWidget(self._speaker, 0, Qt.AlignmentFlag.AlignVCenter)
         lay.addLayout(col, 1)
         lay.addWidget(self._balance, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        # Hover toolbar (top-right, over the text): quick font size / original text / close without the menu.
+        self._tools = QFrame(self)
+        self._tools.setStyleSheet("QFrame{background:rgba(0,0,0,0.55);border-radius:8px;}"
+                                  "QToolButton{padding:4px;}")
+        tl = QHBoxLayout(self._tools)
+        tl.setContentsMargins(4, 2, 4, 2)
+        tl.setSpacing(0)
+        for icon, tip, slot in (("minus", "字体缩小", lambda: self._font(-2)), ("plus", "字体放大", lambda: self._font(+2)),
+                                ("eye", "显示 / 隐藏原文", lambda: self._toggle_source(not self.cfg.show_source)),
+                                ("x", "关闭字幕窗", self._close)):
+            b = icon_button(icon, tip, 13)
+            b.clicked.connect(slot)
+            tl.addWidget(b)
+        self._tools.adjustSize()
+        self._tools.hide()
 
         self._idle = QTimer(self)
         self._idle.setSingleShot(True)
@@ -246,8 +263,18 @@ class SubtitleOverlay(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.setBrush(QColor(12, 14, 18, int(255 * self.cfg.opacity)))
-        p.setPen(Qt.PenStyle.NoPen)
-        p.drawRoundedRect(self.rect(), 14, 14)
+        p.setPen(QColor(255, 255, 255, 26))
+        p.drawRoundedRect(self.rect().adjusted(0, 0, -1, -1), 14, 14)
+
+    def enterEvent(self, e) -> None:
+        self._tools.move(self.width() - self._tools.width() - 8, 6)
+        self._tools.show()
+        self._tools.raise_()
+        super().enterEvent(e)
+
+    def leaveEvent(self, e) -> None:
+        self._tools.hide()
+        super().leaveEvent(e)
 
     def _persist(self) -> None:
         p = self.pos()
@@ -270,6 +297,7 @@ class SubtitleOverlay(QWidget):
     def resizeEvent(self, e) -> None:
         super().resizeEvent(e)
         self._grip.move(self.width() - self._grip.width(), self.height() - self._grip.height())
+        self._tools.move(self.width() - self._tools.width() - 8, 6)
         if not self._fitting and self._ready:
             auto = max(self.minimumHeight(), self._content_height())
             if self.cfg.auto_height and abs(self.height() - auto) > _CUSTOM_H_SLACK:

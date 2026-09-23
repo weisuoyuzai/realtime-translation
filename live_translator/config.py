@@ -111,7 +111,7 @@ class OverlayCfg:
     max_sentences: int = 2        # sentences on screen at once (1 = only the current one); earlier sentences stay
                                   # above it, dimmer, and the oldest drop out first
     auto_height: bool = True      # bar height follows the content; False = keep the height you dragged it to (h)
-    learning: bool = False        # learning mode (also affects the main window): ruby over Chinese / Japanese + speaker
+    learning: bool = False        # learning mode (also affects the main window): ruby (pinyin / furigana / romanization / IPA) + speaker
     ruby_scope: str = "both"      # what gets ruby in learning mode: dst (translation) | src (original) | both
     tts_read: str = "dst"         # what the speaker button reads aloud: dst (translation) | src (original)
     font_size: int = 26

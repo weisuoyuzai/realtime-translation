@@ -17,6 +17,7 @@ IS_WIN, IS_MAC = sys.platform == "win32", sys.platform == "darwin"
 VERSION = os.environ.get("LT_VERSION", "0.0.0")
 
 datas, binaries, hiddenimports = [], [], []
+datas.append((str(ROOT / "live_translator" / "ui" / "assets"), "live_translator/ui/assets"))   # window icon
 
 
 def grab(pkg, *, data=True, libs=True, submodules=False):
@@ -48,6 +49,7 @@ grab("nvidia.cublas", data=False)               # only present with requirements
 grab("nvidia.cudnn", data=False)
 grab("pypinyin", libs=False, submodules=True)    # learning mode: pinyin dictionaries
 grab("pykakasi", libs=False, submodules=True)    # learning mode: furigana (its dictionary files are package data)
+grab("espeakng_loader", libs=False)              # learning mode: IPA (espeak-ng library + data, loaded by path)
 hiddenimports += ["PySide6.QtTextToSpeech"]         # imported lazily by ui/tts.py; PyInstaller's hook adds the speech plugins
 hiddenimports += ["socksio"]                    # httpx[socks]: imported lazily, invisible to static analysis
 if IS_WIN:
@@ -76,7 +78,7 @@ pyz = PYZ(a.pure)                               # noqa: F821
 
 def make_exe(name, console):
     return EXE(pyz, a.scripts, [], exclude_binaries=True, name=name, console=console,   # noqa: F821
-               upx=False, disable_windowed_traceback=False)
+               icon=str(ROOT / "packaging" / "icon.ico") if IS_WIN else None, upx=False, disable_windowed_traceback=False)
 
 
 # Windows / macOS: no console window for the GUI. Windows additionally gets a console twin for --cli / --list-apps
@@ -91,6 +93,7 @@ if IS_MAC:
     app = BUNDLE(                               # noqa: F821
         coll,
         name=f"{NAME}.app",
+        icon=str(ROOT / "packaging" / "icon.icns"),
         bundle_identifier="io.github.weisuoyuzai.live-translator",
         version=VERSION,
         info_plist={

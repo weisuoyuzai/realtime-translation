@@ -5,7 +5,7 @@ from __future__ import annotations
 import dataclasses
 
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt
-from PySide6.QtGui import QColor, QFont, QFontMetricsF, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QColor, QFont, QFontDatabase, QFontMetricsF, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QAbstractButton, QSizePolicy, QWidget
 
 from ..ruby import Token, tokenize
@@ -17,6 +17,18 @@ _RUBY_PAD = 2.0               # extra room next to a character whose annotation 
 # One colour per speaker (1-based, wraps around): brighter set for dark backgrounds, deeper set for light ones.
 SPEAKER_COLORS_DARK = ["#5ab0ff", "#ffb454", "#5fdc8c", "#ff7b8f", "#b6a8ff", "#f5d547", "#4fd8c4", "#ff9a76"]
 SPEAKER_COLORS_LIGHT = ["#1565c0", "#c26a00", "#1b8a4b", "#c62848", "#5b4bc4", "#a08100", "#0b8577", "#c2492a"]
+
+
+_IPA_FONTS = ["Segoe UI", "Lucida Grande", "DejaVu Sans", "Arial Unicode MS"]   # full IPA; kana etc. fall through
+_ipa_fams: list[str] | None = None
+
+
+def _ipa_families() -> list[str]:
+    global _ipa_fams
+    if _ipa_fams is None:
+        have = set(QFontDatabase.families())
+        _ipa_fams = [f for f in _IPA_FONTS if f in have][:1]
+    return _ipa_fams
 
 
 def speaker_color(n: int, dark: bool = True) -> str:
@@ -88,6 +100,7 @@ class RubyText(QWidget):
 
     def _ruby_font(self) -> QFont:
         f = QFont(self.font())
+        f.setFamilies(_ipa_families() + f.families())   # CJK UI fonts draw IPA's ˈ ː ʲ as marks over the next letter
         f.setBold(False)
         f.setItalic(False)
         if f.pointSizeF() > 0:

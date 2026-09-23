@@ -19,7 +19,7 @@ dependencies = { file = ["requirements.txt"] }
 include = ["live_translator*"]
 
 [tool.setuptools.package-data]
-live_translator = ["native/macos/*.swift"]
+live_translator = ["native/macos/*.swift", "ui/assets/*.png"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

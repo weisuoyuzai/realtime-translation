@@ -18,6 +18,7 @@ from live_translator.ui.tts import Tts  # noqa: E402
 
 needs_pinyin = pytest.mark.skipif("pypinyin" in ruby.missing_packages(), reason="pypinyin not installed")
 needs_kakasi = pytest.mark.skipif("pykakasi" in ruby.missing_packages(), reason="pykakasi not installed")
+needs_espeak = pytest.mark.skipif("espeakng-loader" in ruby.missing_packages(), reason="espeakng-loader not installed")
 
 LONG_ZH = "敏捷的棕色狐狸在大家的注视下跳过了那只懒狗，然后消失在了远处的森林里，再也没有回来，谁也不知道它去了哪里。"
 
@@ -51,8 +52,9 @@ def test_no_pinyin_for_japanese_or_when_learning_is_off_and_latin_words_stay_who
 
 
 def test_language_is_guessed_when_unknown_and_opening_brackets_stay_with_the_next_token():
-    assert ruby.ruby_kind("你好") == "zh" and ruby.ruby_kind("こんにちは") == "ja" and ruby.ruby_kind("hello") == ""
-    assert ruby.ruby_kind("漢字", "ja") == "ja" and ruby.ruby_kind("你好", "zh-Hans") == "zh" and ruby.ruby_kind("x", "en") == ""
+    assert ruby.ruby_kind("你好") == "zh" and ruby.ruby_kind("こんにちは") == "ja" and ruby.ruby_kind("hello") == "en"
+    assert ruby.ruby_kind("漢字", "ja") == "ja" and ruby.ruby_kind("你好", "zh-Hans") == "zh" and ruby.ruby_kind("x", "en") == "en"
+    assert ruby.ruby_kind("안녕", "ko") == "ko" and ruby.ruby_kind("Привет") == "ru" and ruby.ruby_kind("สวัสดี", "th") == ""
     toks = ruby.tokenize("「你好」", "zh")
     assert [t.glue for t in toks] == [False, True, False, True]
 
@@ -73,6 +75,24 @@ def test_furigana_covers_compounds_and_iteration_marks_and_reads_kyou_not_konnic
     assert {t.base: t.ruby for t in ruby.tokenize("今日は！", "ja", ruby=True)}["今日"] == "こんにち"   # the greeting
 
 
+def test_korean_words_get_romanization_as_pronounced():
+    got = {t.base: t.ruby for t in ruby.tokenize("안녕하세요, 감사합니다! 국물 같이 신라 많이 OK", "ko", ruby=True)}
+    assert got == {"안녕하세요,": "annyeonghaseyo", "감사합니다!": "gamsahamnida", "국물": "gungmul", "같이": "gachi",
+                   "신라": "silla", "많이": "mani", "OK": ""}
+    assert not any(t.ruby for t in ruby.tokenize("감사합니다", "ko", ruby=False))
+
+
+@needs_espeak
+def test_other_languages_get_ipa_per_word_but_not_over_numbers_or_foreign_script():
+    got = {t.base: t.ruby for t in ruby.tokenize("Hello world, a 3 Привет", "en", ruby=True)}
+    assert got["Hello"] == "həlˈoʊ" and got["world,"] == "wˈɜːld" and got["a"] == "ə"
+    assert got["3"] == "" and got["Привет"] == ""
+    got = {t.base: t.ruby for t in ruby.tokenize("Привет, iPhone", "ru", ruby=True)}
+    assert got["Привет,"].startswith("prʲi") and got["iPhone"] == ""
+    assert all(t.ruby for t in ruby.tokenize("Bonjour tout le monde", "fr", ruby=True))
+    assert not any(t.ruby for t in ruby.tokenize("Xin chào", "vi", ruby=True))           # Vietnamese: not annotated
+
+
 @needs_kakasi
 def test_japanese_tokens_rebuild_the_original_text():
     text = "私はPythonが好きです。「東京」へ行った"
@@ -85,13 +105,14 @@ def test_ruby_text_wraps_and_keeps_only_the_last_lines(qapp):
     w = RubyText()
     w.setText(LONG_ZH, "zh-Hans")
     one = w.heightForWidth(10_000)
-    assert w.heightForWidth(300) > one > 0
-    n = len(w._lines(300))
+    width = w.sizeHint().width() // 4                     # relative to the text, so it holds whatever CJK font (if any)
+    assert w.heightForWidth(width) > one > 0
+    n = len(w._lines(width))
     assert n >= 3
     w.setMaxLines(2)
-    assert len(w._lines(300)) == 2 and w.heightForWidth(300) == pytest.approx(2 * one, abs=2)
+    assert len(w._lines(width)) == 2 and w.heightForWidth(width) == pytest.approx(2 * one, abs=2)
     w.setText("")
-    assert w.heightForWidth(300) == 0
+    assert w.heightForWidth(width) == 0
 
 
 @needs_pinyin
@@ -514,7 +535,8 @@ def test_transcript_rows_get_pinyin_and_speaker_in_learning_mode(qapp):
     assert row.speaker.isHidden() and not row.dst.has_ruby()
     v.set_learning(True)
     v._render()
-    assert not row.speaker.isHidden() and row.dst.has_ruby() and not row.src.has_ruby()
+    assert not row.speaker.isHidden() and row.dst.has_ruby()
+    assert row.src.has_ruby() == ("espeakng-loader" not in ruby.missing_packages())    # English source: IPA
     got = []
     v.speak_requested.connect(got.append)
     row.speaker.click()
