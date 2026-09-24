@@ -4122,7 +4122,8 @@
                           "fill": "$text-2",
                           "content": "存储",
                           "fontFamily": "$font",
-                          "fontSize": 13
+                          "fontSize": 13,
+                          "fontWeight": "normal"
                         },
                         {
                           "type": "text",
@@ -4176,7 +4177,8 @@
                           "fill": "$text-2",
                           "content": "网络",
                           "fontFamily": "$font",
-                          "fontSize": 13
+                          "fontSize": 13,
+                          "fontWeight": "normal"
                         },
                         {
                           "type": "text",
@@ -4285,7 +4287,8 @@
                           "fill": "$text-2",
                           "content": "高级",
                           "fontFamily": "$font",
-                          "fontSize": 13
+                          "fontSize": 13,
+                          "fontWeight": "normal"
                         },
                         {
                           "type": "text",
@@ -6031,7 +6034,8 @@
                           "fill": "$text-2",
                           "content": "网络",
                           "fontFamily": "$font",
-                          "fontSize": 13
+                          "fontSize": 13,
+                          "fontWeight": "normal"
                         },
                         {
                           "type": "text",
@@ -6085,7 +6089,8 @@
                           "fill": "$text-2",
                           "content": "悬浮字幕",
                           "fontFamily": "$font",
-                          "fontSize": 13
+                          "fontSize": 13,
+                          "fontWeight": "normal"
                         },
                         {
                           "type": "text",
@@ -6139,7 +6144,8 @@
                           "fill": "$text-2",
                           "content": "高级",
                           "fontFamily": "$font",
-                          "fontSize": 13
+                          "fontSize": 13,
+                          "fontWeight": "normal"
                         },
                         {
                           "type": "text",
@@ -7503,7 +7509,8 @@
                           "fill": "$text-2",
                           "content": "存储",
                           "fontFamily": "$font",
-                          "fontSize": 13
+                          "fontSize": 13,
+                          "fontWeight": "normal"
                         },
                         {
                           "type": "text",
@@ -7612,7 +7619,8 @@
                           "fill": "$text-2",
                           "content": "悬浮字幕",
                           "fontFamily": "$font",
-                          "fontSize": 13
+                          "fontSize": 13,
+                          "fontWeight": "normal"
                         },
                         {
                           "type": "text",
@@ -7666,7 +7674,8 @@
                           "fill": "$text-2",
                           "content": "高级",
                           "fontFamily": "$font",
-                          "fontSize": 13
+                          "fontSize": 13,
+                          "fontWeight": "normal"
                         },
                         {
                           "type": "text",
@@ -8619,7 +8628,8 @@
                           "fill": "$text-2",
                           "content": "存储",
                           "fontFamily": "$font",
-                          "fontSize": 13
+                          "fontSize": 13,
+                          "fontWeight": "normal"
                         },
                         {
                           "type": "text",
@@ -8673,7 +8683,8 @@
                           "fill": "$text-2",
                           "content": "网络",
                           "fontFamily": "$font",
-                          "fontSize": 13
+                          "fontSize": 13,
+                          "fontWeight": "normal"
                         },
                         {
                           "type": "text",
@@ -8727,7 +8738,8 @@
                           "fill": "$text-2",
                           "content": "悬浮字幕",
                           "fontFamily": "$font",
-                          "fontSize": 13
+                          "fontSize": 13,
+                          "fontWeight": "normal"
                         },
                         {
                           "type": "text",
