@@ -6,3 +6,7 @@ __pycache__/
 build/
 dist/
 .venv-build/
+
+# local-only clones (not tracked)
+faster-whisper/
+jt-live-whisper/

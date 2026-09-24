@@ -1,6 +1,0 @@
-[submodule "jt-live-whisper"]
-	path = jt-live-whisper
-	url = https://github.com/jasoncheng7115/jt-live-whisper
-[submodule "faster-whisper"]
-	path = faster-whisper
-	url = https://github.com/SYSTRAN/faster-whisper
